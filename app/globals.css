@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+/* Tailwind v4 样式入口（不创建 tailwind.config.js） */
+
+:root {
+  /* 极浅灰页面背景 + 偏冷的墨色文字 */
+  --background: #f7f8fa;
+  --foreground: #1f2333;
+  /* 声明浅色配色，防止部分手机浏览器的「强制深色」改写页面外观 */
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  /* 主色：冷调蓝 */
+  --color-primary: #2563eb;
+  --color-primary-soft: #eff4ff;
+  /* 卡片白底 + 1px 细边框 */
+  --color-card: #ffffff;
+  --color-line: #e5e7eb;
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), "PingFang SC", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
