@@ -182,7 +182,7 @@ export default function WeekGrid({
                         type="button"
                         onClick={() => onEventClick(ev)}
                         className={`relative flex h-full w-full cursor-pointer flex-col overflow-hidden rounded-md px-1.5 py-1 text-left text-xs text-white shadow-sm ${KIND_STYLES[ev.kind]} ${
-                          conflictSet.has(ev.id) ? "ring-2 ring-red-500" : ""
+                          conflictSet.has(ev.id) ? "border-l-4 border-l-red-500" : ""
                         } ${flashSet.has(ev.id) ? "animate-pulse" : ""}`}
                       >
                         {ev.unverified && (
