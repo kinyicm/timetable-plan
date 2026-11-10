@@ -7,6 +7,7 @@ import ImportTimetable from "./components/ImportTimetable";
 import type { ScheduleEvent } from "@/lib/types";
 import { loadEvents, saveEvents } from "@/lib/storage";
 import { addDays, dateKey, minutesToLabel, startOfWeek } from "@/lib/time";
+import { findConflicts } from "@/lib/conflicts";
 
 const emptySubscribe = () => () => {};
 
@@ -122,22 +123,11 @@ export default function Home() {
   const [planError, setPlanError] = useState("");
   const [planReply, setPlanReply] = useState("");
   const [flashIds, setFlashIds] = useState<string[]>([]);
+  const [showConflicts, setShowConflicts] = useState(false);
 
-  // 同一天、时间段相交的事件视为冲突，在网格上用红色左边框提示。
-  const conflictIds = useMemo(() => {
-    const set = new Set<string>();
-    for (let i = 0; i < events.length; i++) {
-      for (let j = i + 1; j < events.length; j++) {
-        const a = events[i];
-        const b = events[j];
-        if (a.date === b.date && a.startMin < b.endMin && b.startMin < a.endMin) {
-          set.add(a.id);
-          set.add(b.id);
-        }
-      }
-    }
-    return Array.from(set);
-  }, [events]);
+  // 冲突由 lib/conflicts 的纯函数统一计算，网格与顶部提示条共用同一份结果。
+  const conflicts = useMemo(() => findConflicts(events), [events]);
+  const eventById = useMemo(() => new Map(events.map((e) => [e.id, e])), [events]);
 
   const handleSlotClick = (date: string, startMin: number) => {
     setDialog({
@@ -268,11 +258,39 @@ export default function Home() {
         </div>
       </header>
 
+      {conflicts.length > 0 && (
+        <div className="border-b border-amber-200 bg-amber-50 px-4 py-2">
+          <button
+            type="button"
+            onClick={() => setShowConflicts((v) => !v)}
+            className="flex w-full cursor-pointer items-center justify-between text-sm text-amber-800"
+          >
+            <span className="font-medium">⚠ 本周有 {conflicts.length} 处时间冲突</span>
+            <span className="text-xs text-amber-600">
+              {showConflicts ? "收起" : "展开"}
+            </span>
+          </button>
+          {showConflicts && (
+            <ul className="mt-2 space-y-1 text-xs text-amber-700">
+              {conflicts.map((c, i) => {
+                const a = eventById.get(c.aId);
+                const b = eventById.get(c.bId);
+                return (
+                  <li key={`${c.aId}-${c.bId}-${i}`}>
+                    「{a?.title ?? "未知"}」与「{b?.title ?? "未知"}」：{c.reason}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+
       <div className="min-h-0 flex-1">
         <WeekGrid
           events={events}
           weekStart={weekStart}
-          conflictIds={conflictIds}
+          conflicts={conflicts}
           flashIds={flashIds}
           onSlotClick={handleSlotClick}
           onEventClick={handleEventClick}

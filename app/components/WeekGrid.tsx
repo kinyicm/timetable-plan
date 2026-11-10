@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useSyncExternalStore } from "react";
 import type { ScheduleEvent } from "@/lib/types";
+import type { Conflict } from "@/lib/conflicts";
 import { addDays, dateKey, formatWeekRange, minutesToLabel } from "@/lib/time";
 
 const HOUR_HEIGHT = 56;
@@ -25,7 +26,7 @@ type WeekGridProps = {
   onSlotClick: (date: string, startMin: number) => void;
   onEventClick: (ev: ScheduleEvent) => void;
   flashIds?: string[];
-  conflictIds?: string[];
+  conflicts?: Conflict[];
 };
 
 export default function WeekGrid({
@@ -34,7 +35,7 @@ export default function WeekGrid({
   onSlotClick,
   onEventClick,
   flashIds,
-  conflictIds,
+  conflicts,
 }: WeekGridProps) {
   // 周视图可自行前后翻页，因此把传入的周起点作为初始值放进内部状态。
   const [weekStart, setWeekStart] = useState(initialWeekStart);
@@ -55,7 +56,22 @@ export default function WeekGrid({
   }, [days]);
 
   const flashSet = useMemo(() => new Set(flashIds ?? []), [flashIds]);
-  const conflictSet = useMemo(() => new Set(conflictIds ?? []), [conflictIds]);
+  // 由冲突对反推出「事件 id → 冲突原因列表」与「是否冲突」的集合。
+  const conflictInfo = useMemo(() => {
+    const set = new Set<string>();
+    const reasons = new Map<string, string[]>();
+    for (const c of conflicts ?? []) {
+      set.add(c.aId);
+      set.add(c.bId);
+      const arrA = reasons.get(c.aId) ?? [];
+      arrA.push(c.reason);
+      reasons.set(c.aId, arrA);
+      const arrB = reasons.get(c.bId) ?? [];
+      arrB.push(c.reason);
+      reasons.set(c.bId, arrB);
+    }
+    return { set, reasons };
+  }, [conflicts]);
 
   const prevWeek = () => setWeekStart((w) => addDays(w, -7));
   const nextWeek = () => setWeekStart((w) => addDays(w, 7));
@@ -167,6 +183,11 @@ export default function WeekGrid({
                   const height = ((ev.endMin - ev.startMin) / 60) * HOUR_HEIGHT;
                   const left = (col * 100) / COL_COUNT;
                   const width = 100 / COL_COUNT;
+                  const isConflict = conflictInfo.set.has(ev.id);
+                  const conflictReasons = conflictInfo.reasons.get(ev.id);
+                  const conflictTitle = conflictReasons
+                    ? [...new Set(conflictReasons)].join("；")
+                    : undefined;
                   return (
                     <div
                       key={ev.id}
@@ -181,13 +202,23 @@ export default function WeekGrid({
                       <button
                         type="button"
                         onClick={() => onEventClick(ev)}
+                        title={conflictTitle}
                         className={`relative flex h-full w-full cursor-pointer flex-col overflow-hidden rounded-md px-1.5 py-1 text-left text-xs text-white shadow-sm ${KIND_STYLES[ev.kind]} ${
-                          conflictSet.has(ev.id) ? "border-l-4 border-l-red-500" : ""
+                          isConflict ? "border-l-4 border-l-red-500" : ""
                         } ${flashSet.has(ev.id) ? "animate-pulse" : ""}`}
                       >
-                        {ev.unverified && (
-                          <span className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-white/90 text-[10px] font-bold leading-none text-slate-700">
-                            ?
+                        {(ev.unverified || isConflict) && (
+                          <span className="absolute right-1 top-1 flex items-center gap-1">
+                            {isConflict && (
+                              <span className="text-[11px] leading-none" aria-hidden>
+                                ⚠
+                              </span>
+                            )}
+                            {ev.unverified && (
+                              <span className="flex h-4 w-4 items-center justify-center rounded-full bg-white/90 text-[10px] font-bold leading-none text-slate-700">
+                                ?
+                              </span>
+                            )}
                           </span>
                         )}
                         <span className="truncate pr-5 font-medium">{ev.title}</span>
