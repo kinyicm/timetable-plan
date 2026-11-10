@@ -5,6 +5,7 @@ import type { ChangeEvent } from "react";
 import type { ScheduleEvent } from "@/lib/types";
 import { addDays, dateKey } from "@/lib/time";
 import { slotToRange } from "@/lib/periods";
+import { compressImage } from "@/lib/image";
 
 type ReviewCourse = {
   name: string;
@@ -49,23 +50,6 @@ function genId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function readAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result;
-      if (typeof result === "string") {
-        const comma = result.indexOf(",");
-        resolve(comma >= 0 ? result.slice(comma + 1) : result);
-      } else {
-        reject(new Error("读取图片失败"));
-      }
-    };
-    reader.onerror = () => reject(new Error("读取图片失败"));
-    reader.readAsDataURL(file);
-  });
-}
-
 function clampSlot(n: number): number {
   const v = Math.round(Number(n));
   if (!Number.isFinite(v) || v < 1) return 1;
@@ -80,7 +64,9 @@ type ImportTimetableProps = {
 
 export default function ImportTimetable({ weekStart, onImport }: ImportTimetableProps) {
   const fileRef = useRef<HTMLInputElement>(null);
-  const [status, setStatus] = useState<"idle" | "uploading" | "review" | "error">("idle");
+  const [status, setStatus] = useState<
+    "idle" | "compressing" | "recognizing" | "review" | "error"
+  >("idle");
   const [errorMessage, setErrorMessage] = useState("");
   const [rows, setRows] = useState<ReviewCourse[]>([]);
   const [droppedCount, setDroppedCount] = useState(0);
@@ -95,14 +81,21 @@ export default function ImportTimetable({ weekStart, onImport }: ImportTimetable
   };
 
   const handleFile = async (file: File) => {
-    setStatus("uploading");
+    setStatus("compressing");
     setErrorMessage("");
     try {
-      const imageBase64 = await readAsBase64(file);
+      const { base64, mimeType } = await compressImage(file);
+      // 压缩后仍超 7 MB（base64）则不发请求，避免服务端 413
+      if (base64.length > 7 * 1024 * 1024) {
+        setErrorMessage("图片太大，请重新拍摄或裁剪");
+        setStatus("error");
+        return;
+      }
+      setStatus("recognizing");
       const resp = await fetch("/api/recognize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64, mimeType: file.type }),
+        body: JSON.stringify({ imageBase64: base64, mimeType }),
       });
       const json = (await resp.json()) as RecognizeResponse;
       if (!json.ok || !json.data) {
@@ -190,13 +183,13 @@ export default function ImportTimetable({ weekStart, onImport }: ImportTimetable
           <div className="w-full max-w-3xl rounded-xl border border-line bg-white shadow-xl">
             <header className="flex items-center justify-between border-b border-line px-5 py-4">
               <h2 className="text-base font-semibold text-slate-800">
-                {status === "uploading"
+                {status === "compressing" || status === "recognizing"
                   ? "识别课表"
                   : status === "review"
                     ? "校对课表"
                     : "识别失败"}
               </h2>
-              {status !== "uploading" && (
+              {status !== "compressing" && status !== "recognizing" && (
                 <button
                   type="button"
                   onClick={close}
@@ -209,10 +202,17 @@ export default function ImportTimetable({ weekStart, onImport }: ImportTimetable
             </header>
 
             <div className="px-5 py-4">
-              {status === "uploading" && (
+              {status === "compressing" && (
                 <div className="flex flex-col items-center gap-3 py-10">
                   <div className="h-8 w-8 animate-spin rounded-full border-2 border-line border-t-primary" />
-                  <p className="text-sm text-slate-600">识别中，约 10-20 秒</p>
+                  <p className="text-sm text-slate-600">正在压缩…</p>
+                </div>
+              )}
+
+              {status === "recognizing" && (
+                <div className="flex flex-col items-center gap-3 py-10">
+                  <div className="h-8 w-8 animate-spin rounded-full border-2 border-line border-t-primary" />
+                  <p className="text-sm text-slate-600">正在识别…</p>
                 </div>
               )}
 
