@@ -213,6 +213,9 @@ export default function EventDialog({
               }}
               minAllowed={startMin + 15}
               maxAllowed={DAY_END_MIN}
+              validateInput={(m) =>
+                m <= startMin ? "结束时间必须晚于开始时间" : null
+              }
             />
             <p className="mt-1 text-xs text-slate-500">
               {formatDurationTotal(endMin - startMin)}
