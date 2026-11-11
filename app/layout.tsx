@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "表格快照 · TableSnap",
-  description: "把表格图片拖进来，变成能编辑的表格；我认不准的格子会标出来",
+  title: "课表规划",
+  description: "拍照导入课表，用一句话把学习安排进日程，到点提醒。",
   manifest: "/manifest.webmanifest",
   icons: {
     icon: "/favicon-32.png",
