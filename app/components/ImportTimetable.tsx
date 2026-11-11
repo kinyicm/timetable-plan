@@ -59,10 +59,16 @@ function clampSlot(n: number): number {
 
 type ImportTimetableProps = {
   weekStart: Date;
-  onImport: (events: ScheduleEvent[]) => void;
+  /** 当前课表中 kind === "course" 的事件数，覆盖导入确认时用于提示将删除几门旧课程。 */
+  courseCount: number;
+  onImport: (events: ScheduleEvent[], mode: "append" | "replace") => void;
 };
 
-export default function ImportTimetable({ weekStart, onImport }: ImportTimetableProps) {
+export default function ImportTimetable({
+  weekStart,
+  courseCount,
+  onImport,
+}: ImportTimetableProps) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<
     "idle" | "compressing" | "recognizing" | "review" | "error"
@@ -128,7 +134,7 @@ export default function ImportTimetable({ weekStart, onImport }: ImportTimetable
     setRows((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const handleConfirm = () => {
+  const handleConfirm = (mode: "append" | "replace") => {
     const events: ScheduleEvent[] = rows
       .filter((r) => r.name.trim())
       .map((r): ScheduleEvent => {
@@ -147,7 +153,21 @@ export default function ImportTimetable({ weekStart, onImport }: ImportTimetable
           unverified: true,
         };
       });
-    onImport(events);
+
+    if (events.length === 0) {
+      close();
+      return;
+    }
+
+    // 覆盖导入前先确认一次，避免误删既有课程。
+    if (mode === "replace") {
+      const ok = window.confirm(
+        `将删除当前课表中的 ${courseCount} 门课程（不影响你自己添加的任务与计划），并导入新的 ${events.length} 门课。确定吗？`,
+      );
+      if (!ok) return;
+    }
+
+    onImport(events, mode);
     setStatus("idle");
     setRows([]);
     setDroppedCount(0);
@@ -335,7 +355,7 @@ export default function ImportTimetable({ weekStart, onImport }: ImportTimetable
                       </p>
                     )}
 
-                    <div className="mt-4 flex items-center justify-between">
+                    <div className="mt-4 flex items-center justify-between gap-3">
                       <button
                         type="button"
                         onClick={close}
@@ -343,13 +363,22 @@ export default function ImportTimetable({ weekStart, onImport }: ImportTimetable
                       >
                         取消
                       </button>
-                      <button
-                        type="button"
-                        onClick={handleConfirm}
-                        className="h-9 cursor-pointer rounded-md bg-primary px-4 text-sm font-medium text-white transition-colors hover:bg-blue-700"
-                      >
-                        确认导入 {rows.length} 门课
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleConfirm("append")}
+                          className="h-9 cursor-pointer rounded-md border border-line bg-white px-4 text-sm text-slate-700 transition-colors hover:bg-slate-50"
+                        >
+                          追加导入 {rows.length} 门课
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleConfirm("replace")}
+                          className="h-9 cursor-pointer rounded-md bg-red-600 px-4 text-sm font-medium text-white transition-colors hover:bg-red-700"
+                        >
+                          覆盖导入 {rows.length} 门课
+                        </button>
+                      </div>
                     </div>
                   </>
                 ))}

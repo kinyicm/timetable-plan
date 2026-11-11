@@ -150,10 +150,12 @@ export default function Home() {
   const [planPreview, setPlanPreview] = useState<PlanPreviewState | null>(null);
   const [goalPlanError, setGoalPlanError] = useState("");
   const [goalPlanNotice, setGoalPlanNotice] = useState("");
+  const [importNotice, setImportNotice] = useState("");
 
   const audioRef = useRef<AudioContext | null>(null);
   const remindedRef = useRef<Set<string>>(new Set());
   const snoozeRef = useRef<Map<string, number>>(new Map());
+  const planInputRef = useRef<HTMLInputElement>(null);
 
   // 冲突由 lib/conflicts 的纯函数统一计算，网格与顶部提示条共用同一份结果。
   const conflicts = useMemo(() => findConflicts(events), [events]);
@@ -482,10 +484,25 @@ export default function Home() {
     setDialog(null);
   };
 
-  const handleImport = (newEvents: ScheduleEvent[]) => {
-    const next = [...events, ...newEvents];
+  const handleImport = (newEvents: ScheduleEvent[], mode: "append" | "replace") => {
+    let next: ScheduleEvent[];
+    let keptCount = 0;
+    if (mode === "replace") {
+      // 覆盖：只清掉 kind === "course" 的旧课程，保留任务 / 事件（含已挂 goalId 的计划任务）。
+      const kept = events.filter((e) => e.kind !== "course");
+      keptCount = kept.length;
+      next = [...kept, ...newEvents];
+    } else {
+      next = [...events, ...newEvents];
+    }
     setEvents(next);
     saveEvents(next);
+
+    setImportNotice(
+      mode === "replace"
+        ? `已用 ${newEvents.length} 门课覆盖原课表（保留 ${keptCount} 个任务）`
+        : `已追加 ${newEvents.length} 门课`,
+    );
   };
 
   const handlePlanSend = async () => {
@@ -543,6 +560,10 @@ export default function Home() {
         reply = `${reply}（已忽略 ${droppedCount} 条无法识别的安排）`;
       }
       setPlanReply(reply);
+
+      // 成功返回并执行完 actions 后清空输入框，并把焦点移回输入框。
+      setPlanText("");
+      planInputRef.current?.focus();
     } catch {
       setPlanError("安排失败，请检查网络后重试");
     } finally {
@@ -619,9 +640,19 @@ export default function Home() {
               开启系统通知
             </button>
           )}
-          <ImportTimetable weekStart={weekStart} onImport={handleImport} />
+          <ImportTimetable
+            weekStart={weekStart}
+            courseCount={events.filter((e) => e.kind === "course").length}
+            onImport={handleImport}
+          />
         </div>
       </header>
+
+      {importNotice && (
+        <div className="border-b border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-700">
+          {importNotice}
+        </div>
+      )}
 
       {view === "schedule" ? (
         <>
@@ -674,6 +705,7 @@ export default function Home() {
         {planError && <p className="mb-2 text-xs text-red-600">{planError}</p>}
         <div className="flex items-center gap-2">
           <input
+            ref={planInputRef}
             value={planText}
             onChange={(e) => setPlanText(e.target.value)}
             onKeyDown={(e) => {
