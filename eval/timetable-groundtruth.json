@@ -1,12 +1,12 @@
 {
-  "_说明": "本校真实课表的结构化标准答案，用于衡量 /api/recognize 的识别准确率。数据由作者本人逐门核对星期后确认。",
+  "_说明": "本校真实课表的结构化标准答案，用于衡量 /api/recognize 的识别准确率。本文件数据以「第11周课表（2026-11-11）.xlsx」为准（由豆包整理、作者确认完全正确）。",
   "source": {
-    "desc": "WakeUp 课表 App 截图（第 11 周，2026/11/11）",
+    "desc": "WakeUp 课表 App 截图（第 11 周，2026/11/11 星期三）",
     "school": "广东生态工程职业学院",
     "term": "2026-2027 学年第一学期",
-    "note": "该截图的课程块宽度按内容自适应，块边界与列边界错位，对视觉模型极不友好；这也是本项目坚持「识别后必须人工校对」的原因。"
+    "transcribedBy": "豆包（据截图整理为 xlsx），作者确认无误",
+    "note": "该截图的课程块宽度按内容自适应，块边界与列边界错位，对视觉模型极不友好；其中「职业生涯规划与就业指导」标注「非本周」，本周实际上课。"
   },
-  "confirmedBy": "作者本人（逐门确认星期）",
   "slotsPerDay": 11,
   "periods": [
     { "slot": 1, "start": "08:30", "end": "09:10" },
@@ -19,41 +19,146 @@
     { "slot": 8, "start": "16:50", "end": "17:30" },
     { "slot": 9, "start": "18:30", "end": "19:10" },
     { "slot": 10, "start": "19:20", "end": "20:00" },
-    { "slot": 11, "start": "20:10", "end": "20:50", "note": "原表未标注时间，按第 10 节推算" }
+    { "slot": 11, "start": null, "end": null, "note": "原截图第 11 节未显示时间" }
   ],
   "courses": [
-    { "name": "大学生创新创业教育", "day": 1, "startSlot": 5, "endSlot": 6, "location": "北苑15-101", "weeks": "", "teacher": "" },
-    { "name": "美育教育", "day": 1, "startSlot": 7, "endSlot": 8, "location": "北苑7-104", "weeks": "", "teacher": "" },
-    { "name": "体育", "day": 2, "startSlot": 1, "endSlot": 2, "location": "", "weeks": "", "teacher": "" },
-    { "name": "思想道德与法治", "day": 2, "startSlot": 3, "endSlot": 4, "location": "综507", "weeks": "", "teacher": "" },
-    { "name": "网页设计", "day": 2, "startSlot": 5, "endSlot": 8, "location": "实训楼408", "weeks": "", "teacher": "" },
-    { "name": "职业生涯规划与就业指导", "day": 3, "startSlot": 1, "endSlot": 2, "location": "北苑11-202", "weeks": "", "teacher": "" },
-    { "name": "网络操作系统", "day": 3, "startSlot": 5, "endSlot": 6, "location": "实训楼501", "weeks": "", "teacher": "" },
-    { "name": "人工智能导论", "day": 4, "startSlot": 1, "endSlot": 4, "location": "实训楼303", "weeks": "", "teacher": "" },
-    { "name": "职业英语", "day": 4, "startSlot": 3, "endSlot": 8, "location": "综305", "weeks": "", "teacher": "", "_待确认": "与同日的「人工智能导论 1-4 节」在第 3-4 节重叠，二者必有一处节次读错" },
-    { "name": "程序设计基础", "day": 5, "startSlot": 1, "endSlot": 4, "location": "实训楼201", "weeks": "", "teacher": "" }
+    {
+      "name": "大学生创新创业教育",
+      "day": 1,
+      "startSlot": 5,
+      "endSlot": 6,
+      "weeks": "",
+      "location": "北苑15-101",
+      "teacher": "",
+      "note": ""
+    },
+    {
+      "name": "美育教育",
+      "day": 1,
+      "startSlot": 7,
+      "endSlot": 8,
+      "weeks": "",
+      "location": "北苑7-104",
+      "teacher": "",
+      "note": ""
+    },
+    {
+      "name": "体育",
+      "day": 2,
+      "startSlot": 1,
+      "endSlot": 2,
+      "weeks": "",
+      "location": "",
+      "teacher": "",
+      "note": "截图未标注地点"
+    },
+    {
+      "name": "思想道德与法治",
+      "day": 2,
+      "startSlot": 3,
+      "endSlot": 4,
+      "weeks": "",
+      "location": "综507",
+      "teacher": "",
+      "note": ""
+    },
+    {
+      "name": "网页设计",
+      "day": 2,
+      "startSlot": 5,
+      "endSlot": 8,
+      "weeks": "",
+      "location": "实训楼408",
+      "teacher": "",
+      "note": ""
+    },
+    {
+      "name": "职业生涯规划与就业指导",
+      "day": 3,
+      "startSlot": 1,
+      "endSlot": 2,
+      "weeks": "非本周",
+      "location": "北苑11-202",
+      "teacher": "",
+      "note": "标注「非本周」，本周实际上课"
+    },
+    {
+      "name": "网络操作系统",
+      "day": 3,
+      "startSlot": 5,
+      "endSlot": 6,
+      "weeks": "",
+      "location": "实训楼501",
+      "teacher": "",
+      "note": ""
+    },
+    {
+      "name": "人工智能导论",
+      "day": 4,
+      "startSlot": 1,
+      "endSlot": 2,
+      "weeks": "",
+      "location": "实训楼303",
+      "teacher": "",
+      "note": ""
+    },
+    {
+      "name": "职业英语",
+      "day": 4,
+      "startSlot": 3,
+      "endSlot": 4,
+      "weeks": "",
+      "location": "综305",
+      "teacher": "",
+      "note": ""
+    },
+    {
+      "name": "程序设计基础",
+      "day": 5,
+      "startSlot": 1,
+      "endSlot": 4,
+      "weeks": "",
+      "location": "实训楼201",
+      "teacher": "",
+      "note": ""
+    }
   ],
   "expectedEvents": [
-    { "name": "大学生创新创业教育", "weekday": 1, "startMin": 850, "endMin": 940, "label": "14:10-15:40" },
-    { "name": "美育教育", "weekday": 1, "startMin": 960, "endMin": 1050, "label": "16:00-17:30" },
-    { "name": "体育", "weekday": 2, "startMin": 510, "endMin": 590, "label": "08:30-09:50" },
-    { "name": "思想道德与法治", "weekday": 2, "startMin": 620, "endMin": 710, "label": "10:20-11:50" },
-    { "name": "网页设计", "weekday": 2, "startMin": 850, "endMin": 1050, "label": "14:10-17:30" },
-    { "name": "职业生涯规划与就业指导", "weekday": 3, "startMin": 510, "endMin": 590, "label": "08:30-09:50" },
-    { "name": "网络操作系统", "weekday": 3, "startMin": 850, "endMin": 940, "label": "14:10-15:40" },
-    { "name": "人工智能导论", "weekday": 4, "startMin": 510, "endMin": 710, "label": "08:30-11:50" },
-    { "name": "职业英语", "weekday": 4, "startMin": 620, "endMin": 1050, "label": "10:20-17:30", "_待确认": true },
-    { "name": "程序设计基础", "weekday": 5, "startMin": 510, "endMin": 710, "label": "08:30-11:50" }
+    { "name": "大学生创新创业教育", "weekday": 1, "startMin": 850, "endMin": 940, "label": "14:10-15:40", "isThisWeek": true },
+    { "name": "美育教育", "weekday": 1, "startMin": 960, "endMin": 1050, "label": "16:00-17:30", "isThisWeek": true },
+    { "name": "体育", "weekday": 2, "startMin": 510, "endMin": 590, "label": "08:30-09:50", "isThisWeek": true },
+    { "name": "思想道德与法治", "weekday": 2, "startMin": 620, "endMin": 710, "label": "10:20-11:50", "isThisWeek": true },
+    { "name": "网页设计", "weekday": 2, "startMin": 850, "endMin": 1050, "label": "14:10-17:30", "isThisWeek": true },
+    { "name": "职业生涯规划与就业指导", "weekday": 3, "startMin": 510, "endMin": 590, "label": "08:30-09:50", "isThisWeek": false },
+    { "name": "网络操作系统", "weekday": 3, "startMin": 850, "endMin": 940, "label": "14:10-15:40", "isThisWeek": true },
+    { "name": "人工智能导论", "weekday": 4, "startMin": 510, "endMin": 590, "label": "08:30-09:50", "isThisWeek": true },
+    { "name": "职业英语", "weekday": 4, "startMin": 620, "endMin": 710, "label": "10:20-11:50", "isThisWeek": true },
+    { "name": "程序设计基础", "weekday": 5, "startMin": 510, "endMin": 710, "label": "08:30-11:50", "isThisWeek": true }
   ],
-  "已知冲突": [
-    { "weekday": 4, "a": "人工智能导论", "b": "职业英语", "overlapLabel": "10:20-11:50", "原因": "待作者确认其中一门的节次" }
-  ],
+  "统计": {
+    "课程总数": 10,
+    "本周实际上课": 9,
+    "非本周": 1,
+    "有冲突": false
+  },
   "_历史实测": {
     "日期": "2026-11-11",
-    "结论": "模型返回 12 条（含重复），其中星期正确的为 2/10，节次跨度正确的为 3/10；导入后时间整体偏移 30 分钟。",
-    "根因": [
-      "课表块宽按内容自适应，块与列错位，模型按出现顺序而非列位置编号星期",
-      "导入侧使用硬编码的假作息（08:00-08:45 起），丢弃了识别返回的 periods"
+    "模型识别（GLM-4V，原提示词）": {
+      "返回条数": 12,
+      "多余/重复": 1,
+      "星期正确": "2/10",
+      "节次跨度正确": "3/10",
+      "时间偏移": "全部偏约 30 分钟（导入侧用了硬编码假作息）"
+    },
+    "人工读图（开发者 + 助手）": {
+      "星期正确": "需作者逐门确认才能确定（块与列错位，无法可靠判读）",
+      "节次错误": "2 门（人工智能导论误读为 1-4 节、职业英语误读为 3-8 节）",
+      "未发现的信息": "职业生涯规划与就业指导标注「非本周」"
+    },
+    "结论": [
+      "同一张图，视觉模型与人都读不准：星期需要人工确认，节次也会读错",
+      "因此产品不允许识别结果直接写入日程，必须经过可编辑的校对表格",
+      "「非本周/单双周」这类学期性标注，识别侧容易漏，需要在导入时提示用户确认"
     ]
   }
 }
