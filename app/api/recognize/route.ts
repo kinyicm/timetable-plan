@@ -1,3 +1,5 @@
+import { gridToCourses, type Course } from "@/lib/gridToCourses";
+
 /**
  * 课表规划 · 课表识别接口
  *
@@ -5,8 +7,8 @@
  * 密钥只从服务端环境变量读取（ZHIPU_API_KEY），永远不会下发到浏览器。
  *
  * 注意本接口的职责边界：
- *   模型只负责「把图片读成结构化数据」；
- *   字段取值范围、时间区间合法性、与作息的冲突校验全部由程序完成。
+ *   模型只负责「把图片读成结构化网格」（照抄格子）；
+ *   星期换算、纵向合并、字段取值校验全部由程序完成。
  */
 
 // Node.js 运行时（Cache Components 下不再显式声明 runtime，默认即 Node）。
@@ -99,53 +101,26 @@ class RecognError extends Error {
   }
 }
 
-const PROMPT_CORE = `请识别这张「课程表」图片，严格只输出一个 JSON 对象，不要输出任何解释文字，不要用 markdown 代码块包裹。
+const PROMPT_CORE = `请识别这张「课程表」图片，把它照抄成一个二维网格。严格只输出一个 JSON 对象，不要输出任何解释文字，不要用 markdown 代码块包裹。
 
 JSON 结构固定如下：
 {
   "slotsPerDay": number,
   "periods": [{ "slot": number, "start": string, "end": string }],
-  "courses": [{
-    "name": string,
-    "day": number,
-    "startSlot": number,
-    "endSlot": number,
-    "weeks": string,
-    "location": string,
-    "teacher": string
-  }]
+  "columns": [{ "index": number, "label": string }],
+  "rows": [{ "slot": number, "cells": string[] }]
 }
 
 必须遵守的规则：
-- day 表示星期几：1=周一，2=周二，……，7=周日。「星期一 / 周一 / 一」都换算成数字。
-- startSlot / endSlot 表示第几节课，从 1 开始，包含两端。一门课连上两节就是 startSlot=1、endSlot=2；连上四节就是 1 和 4。
-- 一门课在表里占几格就合并成一条 course，不要拆成多条；同一门课在多个星期出现时，每一天各输出一条。
-- name 只写课程名（如「Java程序设计」），不要把地点、教师、周次混进 name。
-- location 是上课地点（如「3-201」「实训楼305」）。认不出就输出空字符串 ""，不要猜。
-- teacher 是教师姓名。认不出就输出空字符串 ""，不要猜。
-- weeks 是周次（如「1-16」「1-8周」「单周」）。认不出就输出空字符串 ""，不要猜。
+- columns 按图片从左到右列出表头文字（如 一/二/三 或 星期一/星期二…星期日）。index 从 1 开始，对应星期几（1=周一 …… 7=周日）。表头里混有日期数字时忽略数字，只保留「星期」文字。
+- rows 按图片从上到下逐行照抄。slot 用左侧的节次编号（1、2、3…）；左侧若同时印了时间，也一并填进 periods。
+- 每一行的 cells 长度必须等于 columns 的长度，一一对应。一个格子里放该格子的全部文字（课程名、地点、周次都保留原文，用空格分隔）。
+- 空格子用空字符串 ""。
+- 不要做任何「这门课属于星期几」「连上几节」的判断——那是程序的事，你只照抄每个格子里的文字。
 - slotsPerDay 是这张表一天最多有几节（看左侧节次编号的最大值）。认不出就输出 12。
-- periods 只在表头出现「08:00-09:40」这类具体时间时才输出，否则输出空数组 []。
+- periods 只在表头/左侧出现「08:00-09:40」这类具体时间时才输出，否则输出空数组 []。
 - 所有数字字段输出数字类型，不要加引号。
 - 只输出上面这一个 JSON，前后不要有任何多余文字或代码块。`;
-
-/** 结构化课表：一门课的时间区间。day 为 1..7，slot 从 1 开始且包含两端。 */
-export interface Course {
-  name: string;
-  day: number;
-  startSlot: number;
-  endSlot: number;
-  weeks: string;
-  location: string;
-  teacher: string;
-}
-
-/** 一份课表：每天最多几节 + 作息时间 + 全部课程。 */
-export interface Timetable {
-  slotsPerDay: number;
-  periods: { slot: number; start: string; end: string }[];
-  courses: Course[];
-}
 
 /** 重试时追加的强调，用于纠正「夹杂解释文字」的情况。 */
 const PROMPT_REINFORCE = "再次强调：只输出 JSON，不要任何其他文字";
@@ -165,17 +140,23 @@ function parseLoose(raw: string): unknown {
 }
 
 /**
- * 校验并规整模型返回的课表。
+ * 程序侧把模型返回的网格规整成最终结构，并调用 gridToCourses 换算坐标。
  *
- * 这一步是「程序负责确定性」的部分：模型只负责把图片读成结构化数据，
- * 而星期范围、节次范围、区间方向、空课程名这些**有明确对错**的判断，
+ * 这一步是「程序负责确定性」的部分：模型只负责照抄格子，
+ * 而星期换算、纵向合并、节次区间、课程名/地点/周次拆分这些**有明确对错**的判断，
  * 全部在这里用代码做，不交给模型自行决定，也不让非法数据流向界面。
  */
-function validateTimetable(data: unknown): Timetable & { droppedCount: number } {
-  if (!data || typeof data !== "object") {
+function buildData(raw: unknown): {
+  slotsPerDay: number;
+  periods: { slot: number; start: string; end: string }[];
+  courses: Course[];
+  grid: unknown;
+  droppedCount: number;
+} {
+  if (!raw || typeof raw !== "object") {
     throw new RecognError("JSON 解析失败：模型返回结构异常");
   }
-  const d = data as Record<string, unknown>;
+  const d = raw as Record<string, unknown>;
 
   const slotsPerDay = clampInt(d.slotsPerDay, 1, 30, 12);
 
@@ -191,42 +172,13 @@ function validateTimetable(data: unknown): Timetable & { droppedCount: number } 
     })
     .filter((p) => p.slot > 0);
 
-  const coursesRaw = Array.isArray(d.courses) ? d.courses : [];
-  let droppedCount = 0;
-  const courses: Course[] = [];
+  const { courses, droppedCount } = gridToCourses(raw);
 
-  for (const raw of coursesRaw) {
-    const o = (raw ?? {}) as Record<string, unknown>;
-    const name = typeof o.name === "string" ? o.name.trim() : "";
-    // 没有课程名的条目无法展示，也无法参与排程，直接丢弃并计数（对用户可见）
-    if (!name) {
-      droppedCount++;
-      continue;
-    }
-    const startSlot = clampInt(o.startSlot, 1, slotsPerDay, 0);
-    const endSlot = clampInt(o.endSlot, 1, slotsPerDay, 0);
-    if (startSlot === 0) {
-      // 节次无法识别时不丢弃，保留但标到第 1 节，让用户能在界面上改正
-      droppedCount++;
-      continue;
-    }
-    courses.push({
-      name,
-      day: clampInt(o.day, 1, 7, 1),
-      startSlot,
-      // 结束节次必须不早于起始节次，方向反了就取同一个节次
-      endSlot: endSlot >= startSlot ? endSlot : startSlot,
-      weeks: typeof o.weeks === "string" ? o.weeks.trim() : "",
-      location: typeof o.location === "string" ? o.location.trim() : "",
-      teacher: typeof o.teacher === "string" ? o.teacher.trim() : "",
-    });
-  }
-
-  // 固定按「星期 → 起始节次」排序，避免模型输出顺序随机导致界面跳动
-  courses.sort((a, b) => a.day - b.day || a.startSlot - b.startSlot);
-
-  return { slotsPerDay, periods, courses, droppedCount };
+  return { slotsPerDay, periods, courses, grid: raw, droppedCount };
 }
+
+/** 识别成功后的最终返回结构。 */
+type RecognizedTimetable = ReturnType<typeof buildData>;
 
 /** 把任意值转成落在 [min, max] 内的整数，非法时返回 fallback。 */
 function clampInt(v: unknown, min: number, max: number, fallback: number): number {
@@ -247,7 +199,7 @@ async function chatOnce(
   key: string,
   imageValue: string,
   prompt: string,
-): Promise<Timetable & { droppedCount: number }> {
+): Promise<unknown> {
   const content: Payload[] = [
     { type: "text", text: prompt },
     { type: "image_url", image_url: { url: imageValue } },
@@ -295,7 +247,7 @@ async function chatOnce(
   if (typeof text !== "string" || !text.trim()) {
     throw new RecognError("模型未返回内容");
   }
-  return validateTimetable(parseLoose(text));
+  return parseLoose(text);
 }
 
 /** 完整识别流程：首次用 data URL；失败则自动重试 1 次，切换图片形式 + 强化提示词。 */
@@ -303,18 +255,20 @@ async function recognize(
   key: string,
   imageBase64: string,
   mimeType: string,
-): Promise<Timetable & { droppedCount: number }> {
+): Promise<RecognizedTimetable> {
   const asDataUrl = `data:${mimeType || "image/jpeg"};base64,${imageBase64}`;
   // 首次：data URL 形式
   try {
-    return await chatOnce(key, asDataUrl, PROMPT_CORE);
+    return buildData(await chatOnce(key, asDataUrl, PROMPT_CORE));
   } catch (e) {
     // 若首次是密钥/限流等确定性问题，没必要退到第二种图片形式再试
     if (e instanceof RecognError && (e.status === 401 || e.status === 429)) {
       throw e;
     }
     // 重试：改用裸 base64，并在提示词末尾追加强调（同时覆盖 image 形式与 JSON 风格两类失败）
-    return await chatOnce(key, imageBase64, PROMPT_CORE + "\n\n" + PROMPT_REINFORCE);
+    return buildData(
+      await chatOnce(key, imageBase64, PROMPT_CORE + "\n\n" + PROMPT_REINFORCE),
+    );
   }
 }
 
@@ -367,6 +321,9 @@ export async function POST(req: Request) {
     return Response.json({
       ok: true,
       data,
+      // droppedCount 顶层暴露，便于调用方不展开 data 也能读到；
+      // data 内保留一份，兼容前端 ImportTimetable 的既有读取路径。
+      droppedCount: data.droppedCount,
       model: MODEL,
       durationMs: Date.now() - t0,
     });
