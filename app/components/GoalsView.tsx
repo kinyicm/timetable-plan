@@ -34,6 +34,9 @@ export type GoalCreateInput = {
   level: Goal["level"];
   period: string;
   parentId?: string;
+  deadline?: string;
+  hoursPerWeek?: number;
+  priority?: Goal["priority"];
 };
 
 type GoalsViewProps = {
@@ -44,6 +47,8 @@ type GoalsViewProps = {
   onRename: (id: string, title: string) => void;
   onToggleDone: (id: string) => void;
   onDelete: (id: string) => void;
+  onPlan: (goal: Goal) => void;
+  planningGoalId?: string;
 };
 
 function GoalRow({
@@ -54,6 +59,8 @@ function GoalRow({
   onRename,
   onToggleDone,
   onDelete,
+  onPlan,
+  isPlanning,
 }: {
   goal: Goal;
   parentTitle: string | undefined;
@@ -62,6 +69,8 @@ function GoalRow({
   onRename: (id: string, title: string) => void;
   onToggleDone: (id: string) => void;
   onDelete: (id: string) => void;
+  onPlan: (goal: Goal) => void;
+  isPlanning: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(goal.title);
@@ -162,6 +171,16 @@ function GoalRow({
           父目标：{parentTitle ?? "未设置"}
         </p>
       )}
+      <div className="mt-2.5 flex justify-end">
+        <button
+          type="button"
+          onClick={() => onPlan(goal)}
+          disabled={isPlanning}
+          className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isPlanning ? "规划中…" : "🤖 让 AI 规划"}
+        </button>
+      </div>
     </li>
   );
 }
@@ -174,9 +193,14 @@ export default function GoalsView({
   onRename,
   onToggleDone,
   onDelete,
+  onPlan,
+  planningGoalId,
 }: GoalsViewProps) {
   const [title, setTitle] = useState("");
   const [parentId, setParentId] = useState("");
+  const [deadline, setDeadline] = useState("");
+  const [hoursPerWeek, setHoursPerWeek] = useState("10");
+  const [priority, setPriority] = useState<Goal["priority"]>("中");
 
   const levelGoals = useMemo(
     () =>
@@ -218,9 +242,18 @@ export default function GoalsView({
         pid = parentId || parentCandidates[0].id; // 多个 → 用户选择
       }
     }
-    onCreate({ title: t, level, period: currentPeriod(level), parentId: pid });
+    onCreate({
+      title: t,
+      level,
+      period: currentPeriod(level),
+      parentId: pid,
+      deadline: deadline.trim() || undefined,
+      hoursPerWeek: Number(hoursPerWeek) || 10,
+      priority,
+    });
     setTitle("");
     setParentId("");
+    setDeadline("");
   };
 
   return (
@@ -248,6 +281,40 @@ export default function GoalsView({
             >
               新增
             </button>
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-slate-500">截止日期</span>
+              <input
+                type="date"
+                value={deadline}
+                onChange={(e) => setDeadline(e.target.value)}
+                className="h-8 rounded-md border border-line bg-white px-2 text-sm text-slate-800 outline-none transition-colors focus:border-primary"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-slate-500">每周小时数</span>
+              <input
+                type="number"
+                min={1}
+                value={hoursPerWeek}
+                onChange={(e) => setHoursPerWeek(e.target.value)}
+                className="h-8 rounded-md border border-line bg-white px-2 text-sm text-slate-800 outline-none transition-colors focus:border-primary"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-slate-500">优先级</span>
+              <select
+                value={priority}
+                onChange={(e) => setPriority(e.target.value as Goal["priority"])}
+                className="h-8 rounded-md border border-line bg-white px-2 text-sm text-slate-800 outline-none transition-colors focus:border-primary"
+              >
+                <option value="高">高</option>
+                <option value="中">中</option>
+                <option value="低">低</option>
+              </select>
+            </label>
           </div>
 
           {level !== "year" && parentCandidates.length === 0 && (
@@ -293,6 +360,8 @@ export default function GoalsView({
                 onRename={onRename}
                 onToggleDone={onToggleDone}
                 onDelete={onDelete}
+                onPlan={onPlan}
+                isPlanning={planningGoalId === g.id}
               />
             ))}
           </ul>

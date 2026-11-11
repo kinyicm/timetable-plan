@@ -22,4 +22,10 @@ export interface Goal {
   period: string;
   parentId?: string;
   done?: boolean;
+  /** 截止日期 YYYY-MM-DD */
+  deadline?: string;
+  /** 每周投入小时数 */
+  hoursPerWeek?: number;
+  /** 优先级 */
+  priority?: "高" | "中" | "低";
 }

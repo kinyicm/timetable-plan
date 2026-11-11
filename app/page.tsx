@@ -6,10 +6,12 @@ import EventDialog from "./components/EventDialog";
 import ImportTimetable from "./components/ImportTimetable";
 import ReminderToast, { type ReminderItem } from "./components/ReminderToast";
 import GoalsView, { type GoalCreateInput } from "./components/GoalsView";
+import PlanPreview, { type PlanAction } from "./components/PlanPreview";
 import type { Goal, ScheduleEvent } from "@/lib/types";
 import { loadEvents, loadGoals, loadReminderEnabled, saveEvents, saveGoals, saveReminderEnabled } from "@/lib/storage";
 import { addDays, dateKey, minutesToLabel, startOfWeek } from "@/lib/time";
 import { findConflicts } from "@/lib/conflicts";
+import { computeFreeSlots } from "@/lib/freeSlots";
 
 const emptySubscribe = () => () => {};
 
@@ -114,6 +116,16 @@ function NavTab({
 
 type DialogState = { mode: "new" | "edit"; event: ScheduleEvent };
 
+type PlanPreviewState = {
+  goal: Goal;
+  feasible: boolean;
+  advice: string;
+  reason: string;
+  movedCount: number;
+  droppedCount: number;
+  actions: PlanAction[];
+};
+
 export default function Home() {
   // 服务端与首帧返回 false，挂载后返回 true，用于延后「当前时间」的读取。
   const isClient = useSyncExternalStore(emptySubscribe, () => true, () => false);
@@ -134,6 +146,10 @@ export default function Home() {
   const [notifPerm, setNotifPerm] = useState<NotificationPermission>(() =>
     typeof Notification !== "undefined" ? Notification.permission : "default",
   );
+  const [planningGoalId, setPlanningGoalId] = useState<string | null>(null);
+  const [planPreview, setPlanPreview] = useState<PlanPreviewState | null>(null);
+  const [goalPlanError, setGoalPlanError] = useState("");
+  const [goalPlanNotice, setGoalPlanNotice] = useState("");
 
   const audioRef = useRef<AudioContext | null>(null);
   const remindedRef = useRef<Set<string>>(new Set());
@@ -303,6 +319,120 @@ export default function Home() {
     setGoals(next);
     saveGoals(next);
   };
+
+  const handleGoalPlan = async (goal: Goal) => {
+    if (planningGoalId) return;
+    setPlanningGoalId(goal.id);
+    setGoalPlanError("");
+    setGoalPlanNotice("");
+
+    try {
+      // 未来 14 天的空档：今天起算，白天 08:00-23:00，碎片 ≥30 分钟。
+      const freeSlots = computeFreeSlots(events, dateKey(new Date()), 14);
+      const existingTitles = events.map((e) => e.title);
+
+      const resp = await fetch("/api/goal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          goal: {
+            title: goal.title,
+            deadline: goal.deadline ?? "",
+            hoursPerWeek: goal.hoursPerWeek ?? 10,
+            priority: goal.priority ?? "中",
+          },
+          freeSlots,
+          existingTitles,
+          today: dateKey(new Date()),
+        }),
+      });
+      const json = (await resp.json()) as {
+        ok?: boolean;
+        error?: string;
+        feasible?: boolean;
+        advice?: string;
+        reason?: string;
+        movedCount?: number;
+        droppedCount?: number;
+        actions?: unknown;
+      };
+      if (!json.ok) {
+        setGoalPlanError(json.error ?? "规划失败，请稍后重试");
+        return;
+      }
+
+      const actions: PlanAction[] = Array.isArray(json.actions)
+        ? json.actions
+            .map((a) => {
+              const x = (a ?? {}) as Record<string, unknown>;
+              const date = typeof x.date === "string" ? x.date : "";
+              const startMin = Math.round(Number(x.startMin));
+              const endMin = Math.round(Number(x.endMin));
+              const title = typeof x.title === "string" ? x.title.trim() : "";
+              const detail = typeof x.detail === "string" ? x.detail.trim() : "";
+              if (!date || !title || !Number.isFinite(startMin) || !Number.isFinite(endMin)) {
+                return null;
+              }
+              return { date, startMin, endMin, title, detail };
+            })
+            .filter((a): a is PlanAction => a !== null)
+        : [];
+
+      setPlanPreview({
+        goal,
+        feasible: json.feasible === true,
+        advice: typeof json.advice === "string" ? json.advice : "",
+        reason: typeof json.reason === "string" ? json.reason : "",
+        movedCount: typeof json.movedCount === "number" ? json.movedCount : 0,
+        droppedCount: typeof json.droppedCount === "number" ? json.droppedCount : 0,
+        actions,
+      });
+    } catch {
+      setGoalPlanError("规划失败，请检查网络后重试");
+    } finally {
+      setPlanningGoalId(null);
+    }
+  };
+
+  const handleAcceptPlan = (actions: PlanAction[]) => {
+    if (!planPreview) return;
+    const goalId = planPreview.goal.id;
+    const newEvents: ScheduleEvent[] = actions.map((a) => ({
+      id: genId(),
+      title: a.title,
+      date: a.date,
+      startMin: a.startMin,
+      endMin: a.endMin,
+      kind: "task",
+      goalId,
+      unverified: false,
+    }));
+    const next = [...events, ...newEvents];
+    setEvents(next);
+    saveEvents(next);
+
+    const count = newEvents.length;
+    const hours = Math.round(
+      newEvents.reduce((s, e) => s + (e.endMin - e.startMin), 0) / 60,
+    );
+    setGoalPlanNotice(`已安排 ${count} 个任务，本周约 ${hours} 小时`);
+    setPlanPreview(null);
+
+    if (count > 0) {
+      setFlashIds(newEvents.map((e) => e.id));
+      setTimeout(() => setFlashIds([]), 2000);
+    }
+    setView("schedule");
+  };
+
+  const handleReplan = () => {
+    if (!planPreview) return;
+    const goal = planPreview.goal;
+    setPlanPreview(null);
+    void handleGoalPlan(goal);
+  };
+
+  const handleClosePlanPreview = () => setPlanPreview(null);
 
   const handleSlotClick = (date: string, startMin: number) => {
     setDialog({
@@ -484,6 +614,11 @@ export default function Home() {
 
       {view === "schedule" ? (
         <>
+          {goalPlanNotice && (
+            <div className="border-b border-indigo-200 bg-indigo-50 px-4 py-2 text-sm text-indigo-700">
+              {goalPlanNotice}
+            </div>
+          )}
           {conflicts.length > 0 && (
         <div className="border-b border-amber-200 bg-amber-50 px-4 py-2">
           <button
@@ -558,6 +693,29 @@ export default function Home() {
           onRename={handleGoalRename}
           onToggleDone={handleGoalToggleDone}
           onDelete={handleGoalDelete}
+          onPlan={(goal) => void handleGoalPlan(goal)}
+          planningGoalId={planningGoalId ?? undefined}
+        />
+      )}
+
+      {goalPlanError && (
+        <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+          {goalPlanError}
+        </div>
+      )}
+
+      {planPreview && (
+        <PlanPreview
+          goalTitle={planPreview.goal.title}
+          feasible={planPreview.feasible}
+          advice={planPreview.advice}
+          reason={planPreview.reason}
+          movedCount={planPreview.movedCount}
+          droppedCount={planPreview.droppedCount}
+          actions={planPreview.actions}
+          onReplan={handleReplan}
+          onAccept={handleAcceptPlan}
+          onClose={handleClosePlanPreview}
         />
       )}
 
