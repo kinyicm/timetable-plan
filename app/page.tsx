@@ -103,8 +103,8 @@ function NavTab({
     <button
       type="button"
       onClick={onClick}
-      className={`h-8 cursor-pointer rounded-md px-3 text-sm font-medium transition-colors ${
-        active ? "bg-primary text-white" : "text-slate-600 hover:bg-slate-100"
+      className={`cursor-pointer rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+        active ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-100"
       }`}
     >
       {children}
@@ -411,7 +411,7 @@ export default function Home() {
 
   if (!isClient) {
     return (
-      <main className="flex h-screen flex-col overflow-hidden">
+      <main className="flex h-screen flex-col overflow-hidden bg-slate-50">
         <header className="flex items-center justify-between border-b border-line bg-card px-4 py-3">
           <h1 className="text-lg font-semibold text-slate-900">周视图</h1>
         </header>
@@ -427,33 +427,53 @@ export default function Home() {
   const weekEndKey = dateKey(addDays(weekStart, 6));
 
   return (
-    <main className="flex h-screen flex-col overflow-hidden">
-      <header className="flex items-center justify-between border-b border-line bg-card px-4 py-3">
+    <main className="flex h-screen flex-col overflow-hidden bg-slate-50">
+      <header className="flex items-center justify-between gap-4 border-b border-slate-200 bg-white px-4 py-3 shadow-sm">
+        {/* 品牌区 */}
+        <div className="flex shrink-0 items-center gap-2.5">
+          <div className="flex h-5 w-5 items-center justify-center rounded-md bg-indigo-600 text-xs font-bold text-white">
+            课
+          </div>
+          <div className="leading-tight">
+            <div className="text-base font-semibold text-slate-900">课表规划</div>
+            <div className="text-xs text-slate-400">拍照导入 · 一句话安排 · 到点提醒</div>
+          </div>
+        </div>
+
+        {/* 导航区 */}
         <nav className="flex items-center gap-1">
           <NavTab active={view === "schedule"} onClick={() => setView("schedule")}>日程</NavTab>
           <NavTab active={view === "week"} onClick={() => setView("week")}>周目标</NavTab>
           <NavTab active={view === "month"} onClick={() => setView("month")}>月目标</NavTab>
           <NavTab active={view === "year"} onClick={() => setView("year")}>年目标</NavTab>
         </nav>
-        <div className="flex items-center gap-3">
+
+        {/* 操作区 */}
+        <div className="flex shrink-0 items-center gap-3">
           <button
             type="button"
             onClick={handleToggleReminder}
             aria-pressed={reminderEnabled}
-            className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full border border-line bg-white px-3 text-xs text-slate-700 transition-colors hover:bg-slate-50"
+            className="flex cursor-pointer items-center gap-2 text-sm text-slate-600"
           >
+            <span>提醒</span>
             <span
-              className={`h-2 w-2 rounded-full ${
-                reminderEnabled ? "bg-emerald-500" : "bg-slate-300"
+              className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+                reminderEnabled ? "bg-indigo-600" : "bg-slate-300"
               }`}
-            />
-            提醒 {reminderEnabled ? "开" : "关"}
+            >
+              <span
+                className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                  reminderEnabled ? "translate-x-4" : ""
+                }`}
+              />
+            </span>
           </button>
           {typeof Notification !== "undefined" && notifPerm === "default" && (
             <button
               type="button"
               onClick={() => void handleEnableNotifications()}
-              className="inline-flex h-8 cursor-pointer items-center rounded-full border border-line bg-white px-3 text-xs text-slate-700 transition-colors hover:bg-slate-50"
+              className="inline-flex cursor-pointer items-center rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm text-slate-700 transition-colors hover:bg-slate-50"
             >
               开启系统通知
             </button>
@@ -503,9 +523,9 @@ export default function Home() {
         />
       </div>
 
-      <div className="border-t border-line bg-card px-4 py-3">
+      <div className="border-t border-slate-200 bg-white px-4 py-3 shadow-[0_-2px_8px_rgba(0,0,0,0.04)]">
         {planReply && <p className="mb-2 text-sm text-slate-700">{planReply}</p>}
-        {planError && <p className="mb-2 text-sm text-red-600">{planError}</p>}
+        {planError && <p className="mb-2 text-xs text-red-600">{planError}</p>}
         <div className="flex items-center gap-2">
           <input
             value={planText}
@@ -516,13 +536,13 @@ export default function Home() {
               }
             }}
             placeholder="用一句话安排，如：周三晚上 7 点复习高数"
-            className="h-9 min-w-0 flex-1 rounded-md border border-line bg-white px-3 text-sm text-slate-800 outline-none transition-colors focus:border-primary"
+            className="h-9 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition-colors focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
           />
           <button
             type="button"
             onClick={() => void handlePlanSend()}
             disabled={planStatus === "loading" || !planText.trim()}
-            className="inline-flex h-9 shrink-0 cursor-pointer items-center rounded-md bg-primary px-4 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex shrink-0 cursor-pointer items-center rounded-lg bg-indigo-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {planStatus === "loading" ? "AI 正在安排…" : "发送"}
           </button>

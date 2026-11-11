@@ -27,9 +27,9 @@ const MAX_TEXT_LENGTH = 500;
 const IS_DEV =
   process.env.NODE_ENV !== "production" || process.env.DISABLE_RATE_LIMIT === "1";
 
-/** 限流窗口与额度：单 IP 每分钟最多 5 次安排。 */
+/** 限流窗口与额度：单 IP 每分钟最多 10 次安排。 */
 const RATE_WINDOW_MS = 60_000;
-const RATE_MAX = 5;
+const RATE_MAX = 10;
 const rateBuckets = new Map<string, number[]>();
 
 /**
@@ -102,10 +102,15 @@ function addDaysToDateKey(dateKey: string, days: number): string {
   ).padStart(2, "0")}`;
 }
 
-/** 把任意值转成整数；非法返回 NaN。 */
+/** 把数字或数字字符串转成整数；null / undefined / 非数字返回 NaN。 */
 function asInt(v: unknown): number {
-  const n = Math.round(Number(v));
-  return Number.isFinite(n) ? n : NaN;
+  if (v === null || v === undefined) return NaN;
+  if (typeof v === "number") return Math.round(v);
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.round(n) : NaN;
+  }
+  return NaN;
 }
 
 type ConvertedAddAction = {
@@ -127,18 +132,53 @@ type ConvertedDeleteAction = {
 
 type ConvertedAction = ConvertedAddAction | ConvertedDeleteAction;
 
+const WEEKDAY_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+
+/**
+ * 解析相对/绝对星期几为具体日期：
+ * 1. dayOffset 是 0..6 的整数 → date = today + dayOffset 天（相对今天，dayOffset 优先）
+ * 2. 否则 day 是 1..7 → date = weekStart + (day-1) 天（绝对周几）
+ * 3. 否则返回 null
+ * 用 day 分支算出且早于 today 时，自动加 7 天（取下一次）并记录「下周」提示。
+ */
+function resolveDate(
+  dayOffsetRaw: unknown,
+  dayRaw: unknown,
+  today: string,
+  weekStart: string,
+  nextWeekNotes: string[],
+): string | null {
+  const dayOffset = asInt(dayOffsetRaw);
+  if (Number.isFinite(dayOffset) && dayOffset >= 0 && dayOffset <= 6) {
+    return addDaysToDateKey(today, dayOffset);
+  }
+  const day = asInt(dayRaw);
+  if (!Number.isFinite(day) || day < 1 || day > 7) {
+    return null;
+  }
+  let date = addDaysToDateKey(weekStart, day - 1);
+  if (date < today) {
+    date = addDaysToDateKey(date, 7);
+    nextWeekNotes.push(`已安排到下${WEEKDAY_CN[day - 1]}`);
+  }
+  return date;
+}
+
 /**
  * 程序侧完成日期/时间换算与校验：
- * date = weekStart + (day-1) 天，startMin = startHour*60 + startMinute，
- * endMin = startMin + durationMin；不合法的条目丢弃并计数。
+ * dayOffset/day → date（today 或 weekStart 参与运算），
+ * startMin = startHour*60 + startMinute，endMin = startMin + durationMin；
+ * 不合法的条目丢弃并计数。
  */
 function convertActions(
   rawActions: unknown,
+  today: string,
   weekStart: string,
-): { actions: ConvertedAction[]; droppedCount: number } {
+): { actions: ConvertedAction[]; droppedCount: number; replyAddition: string } {
   const actions = Array.isArray(rawActions) ? rawActions : [];
   const result: ConvertedAction[] = [];
   let droppedCount = 0;
+  const nextWeekNotes: string[] = [];
 
   for (const raw of actions) {
     const a = (raw ?? {}) as Record<string, unknown>;
@@ -146,12 +186,12 @@ function convertActions(
 
     if (op === "delete") {
       const matchTitle = typeof a.matchTitle === "string" ? a.matchTitle.trim() : "";
-      const day = asInt(a.day);
-      if (!matchTitle || !Number.isFinite(day) || day < 1 || day > 7) {
+      const date = resolveDate(a.dayOffset, a.day, today, weekStart, nextWeekNotes);
+      if (!matchTitle || !date) {
         droppedCount++;
         continue;
       }
-      result.push({ op: "delete", date: addDaysToDateKey(weekStart, day - 1), matchTitle });
+      result.push({ op: "delete", date, matchTitle });
       continue;
     }
 
@@ -162,7 +202,7 @@ function convertActions(
 
     const ev = (a.event ?? {}) as Record<string, unknown>;
     const title = typeof ev.title === "string" ? ev.title.trim() : "";
-    const day = asInt(ev.day);
+    const date = resolveDate(ev.dayOffset, ev.day, today, weekStart, nextWeekNotes);
     const startHour = asInt(ev.startHour);
     const durationMin = asInt(ev.durationMin);
     const startMinuteRaw = asInt(ev.startMinute);
@@ -174,7 +214,7 @@ function convertActions(
       droppedCount++;
       continue;
     }
-    if (!Number.isFinite(day) || day < 1 || day > 7) {
+    if (!date) {
       droppedCount++;
       continue;
     }
@@ -202,7 +242,7 @@ function convertActions(
 
     result.push({
       op: "add",
-      date: addDaysToDateKey(weekStart, day - 1),
+      date,
       startMin,
       endMin,
       title,
@@ -213,7 +253,11 @@ function convertActions(
     });
   }
 
-  return { actions: result, droppedCount };
+  return {
+    actions: result,
+    droppedCount,
+    replyAddition: [...new Set(nextWeekNotes)].join("；"),
+  };
 }
 
 /** 依据背景上下文拼出「把一句话转成语义（不涉及日期算术）」的提示词。 */
@@ -234,15 +278,17 @@ ${ctx.existing || "（暂无）"}
 JSON 结构固定如下：
 {
   "actions": [
-    { "op": "add", "event": { "day": number, "startHour": number, "startMinute": number, "durationMin": number, "title": string, "kind": "course" | "task" | "event", "location": string, "remindBeforeMin": number } },
-    { "op": "delete", "matchTitle": string, "day": number }
+    { "op": "add", "event": { "day": number|null, "dayOffset": number|null, "startHour": number, "startMinute": number, "durationMin": number, "title": string, "kind": "course" | "task" | "event", "location": string, "remindBeforeMin": number } },
+    { "op": "delete", "matchTitle": string, "day": number|null, "dayOffset": number|null }
   ],
   "reply": "一句简短的中文回复"
 }
 
 必须遵守的规则：
-- 绝对不要输出 date、startMin、endMin 这些字段，也不要自己算日期或分钟数；你只给「本周几 / 几点 / 持续多久」的语义。
-- day 表示本周几：1=周一，2=周二，……，7=周日。用户说「周三」就写 day=3。
+- 绝对不要输出 date、startMin、endMin 这些字段，也不要自己算日期或分钟数；你只给「绝对周几 或 明天 / 几点 / 持续多久」的语义。
+- day 表示绝对周几：1=周一，2=周二，……，7=周日。用户说「周三」「星期五」就写 day=3 / day=5，同时 dayOffset 给 null。
+- dayOffset 表示相对今天：0=今天，1=明天，2=后天，3=大后天。用户说「明天」「后天」「大后天」就写 dayOffset=1/2/3，同时 day 给 null。
+- day 与 dayOffset 只能有一个给数字，另一个必须给 null；如果两个都给了数字，按 dayOffset 优先。
 - startHour 是开始的小时（0-23）。用户说「晚上 7 点」就写 startHour=19；「上午 9 点」= 9；「下午 3 点」= 15。
 - startMinute 是开始的分钟（0 或 30）。用户没说分钟就写 0。
 - durationMin 是持续分钟数。用户说「到 9 点」（从 19 点开始）就写 durationMin=120；「一小时」= 60。
@@ -250,9 +296,9 @@ JSON 结构固定如下：
 - kind 取值：course（课程）、task（任务）、event（一般事件）；拿不准就用 event。
 - location 是地点；认不出就写空字符串 ""，不要猜。
 - remindBeforeMin 是提前提醒分钟数（0 表示不提醒）；用户没提就写 0。
-- op=add 表示新增一条安排；op=delete 表示删除一条已有安排，此时给 matchTitle（要删的标题）和 day（星期几），不要给 event。
+- op=add 表示新增一条安排；op=delete 表示删除一条已有安排，此时给 matchTitle（要删的标题）和 day/dayOffset，不要给 event。
 - 若用户的话无需操作或无法理解，actions 返回空数组 []，reply 里说明原因。
-- 所有数字字段输出数字类型，不要加引号。
+- 所有数字字段输出数字类型，不要加引号；null 输出 null，不要加引号。
 - 只输出上面这一个 JSON。`;
 }
 
@@ -345,8 +391,13 @@ export async function POST(req: Request) {
     const data = await chatOnce(key, buildPrompt(text, { today, weekStart, weekEnd, existing }));
     const d = (data ?? {}) as Record<string, unknown>;
     const reply = typeof d.reply === "string" ? d.reply.trim() : "";
-    const { actions, droppedCount } = convertActions(d.actions, weekStart);
-    return Response.json({ ok: true, actions, reply, droppedCount });
+    const { actions, droppedCount, replyAddition } = convertActions(d.actions, today, weekStart);
+    const finalReply = replyAddition
+      ? reply
+        ? `${reply}（${replyAddition}）`
+        : replyAddition
+      : reply;
+    return Response.json({ ok: true, actions, reply: finalReply, droppedCount });
   } catch (e) {
     const err = e instanceof PlanError ? e : new PlanError("安排失败，请稍后重试");
     // 出口统一脱敏：任何返回给浏览器的错误文本都不允许出现密钥原文

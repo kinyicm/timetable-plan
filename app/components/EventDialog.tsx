@@ -20,9 +20,9 @@ const REMIND_OPTIONS: { value: number; label: string }[] = [
   { value: 30, label: "提前 30 分钟" },
 ];
 
-const fieldLabel = "mb-1 block text-sm font-medium text-slate-700";
+const fieldLabel = "mb-1 block text-xs text-slate-500";
 const inputCls =
-  "w-full rounded-md border border-line bg-white px-3 py-2 text-sm text-slate-800 outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary";
+  "w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition-colors focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100";
 
 type EventDialogProps = {
   mode: "new" | "edit";
@@ -98,11 +98,11 @@ export default function EventDialog({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md rounded-xl border border-line bg-white shadow-xl"
+        className="w-full max-w-md rounded-xl border border-slate-200 bg-white shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="flex items-center justify-between border-b border-line px-5 py-4">
-          <h2 className="text-base font-semibold text-slate-800">
+        <header className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+          <h2 className="text-base font-semibold text-slate-900">
             {mode === "new" ? "新建事件" : "编辑事件"}
           </h2>
           <button
@@ -214,13 +214,13 @@ export default function EventDialog({
           )}
         </div>
 
-        <footer className="flex items-center justify-between gap-3 border-t border-line px-5 py-4">
+        <footer className="flex items-center justify-between gap-3 border-t border-slate-200 px-5 py-4">
           <div>
             {mode === "edit" && (
               <button
                 type="button"
                 onClick={() => onDelete(initial.id)}
-                className="h-9 cursor-pointer rounded-md px-3 text-sm font-medium text-red-600 transition-colors hover:bg-red-50"
+                className="cursor-pointer rounded-lg border border-red-200 px-3.5 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-50"
               >
                 删除
               </button>
@@ -230,14 +230,14 @@ export default function EventDialog({
             <button
               type="button"
               onClick={onClose}
-              className="h-9 cursor-pointer rounded-md border border-line bg-white px-4 text-sm text-slate-700 transition-colors hover:bg-slate-50"
+              className="cursor-pointer rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm text-slate-700 transition-colors hover:bg-slate-50"
             >
               取消
             </button>
             <button
               type="button"
               onClick={handleSave}
-              className="h-9 cursor-pointer rounded-md bg-primary px-4 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+              className="cursor-pointer rounded-lg bg-indigo-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-indigo-700"
             >
               保存
             </button>

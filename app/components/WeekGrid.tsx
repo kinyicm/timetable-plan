@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ScheduleEvent } from "@/lib/types";
 import type { Conflict } from "@/lib/conflicts";
 import { addDays, dateKey, formatWeekRange, minutesToLabel } from "@/lib/time";
@@ -12,10 +12,16 @@ const COL_COUNT = 7;
 
 const WEEKDAY_LABELS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
-const KIND_STYLES: Record<ScheduleEvent["kind"], string> = {
-  course: "bg-blue-600",
-  task: "bg-emerald-600",
-  event: "bg-slate-500",
+const KIND_BAR: Record<ScheduleEvent["kind"], string> = {
+  course: "bg-blue-500",
+  task: "bg-emerald-500",
+  event: "bg-slate-400",
+};
+
+const KIND_BG: Record<ScheduleEvent["kind"], string> = {
+  course: "bg-blue-50",
+  task: "bg-emerald-50",
+  event: "bg-slate-100",
 };
 
 const emptySubscribe = () => () => {};
@@ -43,6 +49,30 @@ export default function WeekGrid({
   // 既避免预渲染阶段触发 unstable value 报错，也避免水合阶段日期不一致。
   const isClient = useSyncExternalStore(emptySubscribe, () => true, () => false);
   const todayKey = isClient ? dateKey(new Date()) : null;
+  // 当前时间（分钟数，-1 表示尚未就绪），用于画「当前时间」红线，每 60 秒刷新。
+  const [nowMin, setNowMin] = useState<number>(-1);
+
+  // 滚动容器 ref：首次挂载时滚动到 07:00，避免打开时前 7 小时空白。
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = 7 * HOUR_HEIGHT;
+  }, []);
+
+  // 当前时间红线位置：挂载后立即定位一次，之后每 60 秒刷新。
+  // 更新放在 setTimeout/setInterval 回调里（异步），避免 set-state-in-effect。
+  useEffect(() => {
+    const update = () => {
+      const now = new Date();
+      setNowMin(now.getHours() * 60 + now.getMinutes());
+    };
+    const t = setTimeout(update, 0);
+    const id = setInterval(update, 60_000);
+    return () => {
+      clearTimeout(t);
+      clearInterval(id);
+    };
+  }, []);
 
   const days = useMemo(
     () => Array.from({ length: COL_COUNT }, (_, i) => addDays(weekStart, i)),
@@ -54,6 +84,9 @@ export default function WeekGrid({
     days.forEach((d, i) => map.set(dateKey(d), i));
     return map;
   }, [days]);
+
+  // 今天在本周内的列号（不在本周时为 null），用于今天列高亮与当前时间红线。
+  const todayCol = todayKey !== null ? (dateToIndex.get(todayKey) ?? null) : null;
 
   const flashSet = useMemo(() => new Set(flashIds ?? []), [flashIds]);
   // 由冲突对反推出「事件 id → 冲突原因列表」与「是否冲突」的集合。
@@ -100,18 +133,18 @@ export default function WeekGrid({
       </div>
 
       {/* 可滚动主体：横向 + 纵向 */}
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div ref={scrollRef} className="relative min-h-0 flex-1 overflow-auto">
         <div className="flex">
           {/* 左侧时间轴（横向滚动时固定） */}
-          <div className="sticky left-0 z-20 shrink-0 border-r border-line bg-card">
-            <div className="border-b border-line" style={{ height: HEADER_HEIGHT }} />
+          <div className="sticky left-0 z-20 w-14 shrink-0 border-r border-slate-100 bg-white">
+            <div className="border-b border-slate-200" style={{ height: HEADER_HEIGHT }} />
             {Array.from({ length: HOURS }, (_, h) => (
               <div
                 key={h}
-                className="border-b border-line pr-2 pt-0.5 text-right"
+                className="border-b border-slate-100 pr-2 pt-0.5 text-right"
                 style={{ height: HOUR_HEIGHT }}
               >
-                <span className="text-xs text-slate-400">
+                <span className="text-[11px] text-slate-400">
                   {minutesToLabel(h * 60)}
                 </span>
               </div>
@@ -125,25 +158,28 @@ export default function WeekGrid({
               {days.map((d) => {
                 const key = dateKey(d);
                 const isToday = todayKey !== null && todayKey === key;
+                const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+                const weekdayColor = isToday
+                  ? "text-indigo-600"
+                  : isWeekend
+                    ? "text-slate-400"
+                    : "text-slate-500";
+                const dateColor = isToday
+                  ? "text-indigo-600"
+                  : isWeekend
+                    ? "text-slate-400"
+                    : "text-slate-900";
                 return (
                   <div
                     key={key}
-                    className={`flex flex-col items-center justify-center border-b border-r border-line ${
-                      isToday ? "bg-primary-soft" : "bg-card"
+                    className={`flex flex-col items-center justify-center border-b border-slate-200 border-r border-slate-100 ${
+                      isToday ? "bg-indigo-50" : "bg-white"
                     }`}
                   >
-                    <span
-                      className={`text-sm font-medium ${
-                        isToday ? "text-primary" : "text-slate-700"
-                      }`}
-                    >
+                    <span className={`text-xs font-medium ${weekdayColor}`}>
                       {WEEKDAY_LABELS[d.getDay()]}
                     </span>
-                    <span
-                      className={`text-xs ${
-                        isToday ? "text-primary" : "text-slate-400"
-                      }`}
-                    >
+                    <span className={`text-sm font-semibold ${dateColor}`}>
                       {key.slice(5).replace("-", "/")}
                     </span>
                   </div>
@@ -158,21 +194,31 @@ export default function WeekGrid({
                   const col = i % COL_COUNT;
                   const hour = Math.floor(i / COL_COUNT);
                   const key = dateKey(days[col]);
-                  const isToday = todayKey !== null && todayKey === key;
                   return (
                     <button
                       key={i}
                       type="button"
                       onClick={() => onSlotClick(key, hour * 60)}
                       aria-label={`${key} ${minutesToLabel(hour * 60)}`}
-                      className={`cursor-pointer border-b border-r border-line transition-colors hover:bg-primary-soft/70 ${
-                        isToday ? "bg-primary-soft/60" : "bg-white"
+                      className={`cursor-pointer border-b border-r border-slate-100 transition-colors hover:bg-indigo-50 ${
+                        hour % 2 === 0 ? "bg-white" : "bg-slate-50/60"
                       }`}
                       style={{ height: HOUR_HEIGHT }}
                     />
                   );
                 })}
               </div>
+
+              {/* 今天列高亮叠层（斑马纹之上、事件之下） */}
+              {todayCol !== null && (
+                <div
+                  className="pointer-events-none absolute top-0 bottom-0 bg-indigo-50/40"
+                  style={{
+                    left: `${(todayCol * 100) / COL_COUNT}%`,
+                    width: `${100 / COL_COUNT}%`,
+                  }}
+                />
+              )}
 
               {/* 事件浮层：空白区域点击穿透到下方格子 */}
               <div className="pointer-events-none absolute inset-0">
@@ -203,36 +249,70 @@ export default function WeekGrid({
                         type="button"
                         onClick={() => onEventClick(ev)}
                         title={conflictTitle}
-                        className={`relative flex h-full w-full cursor-pointer flex-col overflow-hidden rounded-md px-1.5 py-1 text-left text-xs text-white shadow-sm ${KIND_STYLES[ev.kind]} ${
-                          isConflict ? "border-l-4 border-l-red-500" : ""
+                        className={`relative flex h-full w-full cursor-pointer flex-col overflow-hidden rounded-md px-2 py-1 text-left transition-shadow hover:shadow-sm hover:ring-1 hover:ring-black/5 ${KIND_BG[ev.kind]} ${
+                          isConflict ? "ring-1 ring-red-400" : ""
                         } ${flashSet.has(ev.id) ? "animate-pulse" : ""}`}
                       >
+                        <span
+                          className={`absolute left-0 top-0 h-full w-[3px] ${KIND_BAR[ev.kind]}`}
+                        />
                         {(ev.unverified || isConflict) && (
                           <span className="absolute right-1 top-1 flex items-center gap-1">
                             {isConflict && (
-                              <span className="text-[11px] leading-none" aria-hidden>
+                              <span className="text-[11px] leading-none text-red-500" aria-hidden>
                                 ⚠
                               </span>
                             )}
                             {ev.unverified && (
-                              <span className="flex h-4 w-4 items-center justify-center rounded-full bg-white/90 text-[10px] font-bold leading-none text-slate-700">
+                              <span className="flex h-4 w-4 items-center justify-center rounded-full bg-white text-[10px] font-bold leading-none text-amber-600">
                                 ?
                               </span>
                             )}
                           </span>
                         )}
-                        <span className="truncate pr-5 font-medium">{ev.title}</span>
-                        <span className="truncate opacity-90">
-                          {minutesToLabel(ev.startMin)} - {minutesToLabel(ev.endMin)}
+                        <span className="truncate pr-5 text-[13px] font-medium text-slate-900">
+                          {ev.title}
+                        </span>
+                        <span className="truncate pr-5 text-[11px] text-slate-500">
+                          {minutesToLabel(ev.startMin)}-{minutesToLabel(ev.endMin)}
+                          {ev.location ? ` · ${ev.location}` : ""}
                         </span>
                       </button>
                     </div>
                   );
                 })}
               </div>
+
+              {/* 当前时间红线：仅今天列，每 60 秒随 nowMin 刷新 */}
+              {todayCol !== null && nowMin >= 0 && (
+                <div
+                  className="pointer-events-none absolute z-10 h-0.5 bg-red-500"
+                  style={{
+                    top: (nowMin / 60) * HOUR_HEIGHT,
+                    left: `${(todayCol * 100) / COL_COUNT}%`,
+                    width: `${100 / COL_COUNT}%`,
+                  }}
+                >
+                  <span className="absolute -left-1 -top-[3px] h-2 w-2 rounded-full bg-red-500" />
+                </div>
+              )}
             </div>
           </div>
         </div>
+
+        {/* 空状态：无事件时网格中央浮动引导卡片 */}
+        {events.length === 0 && (
+          <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center">
+            <div className="pointer-events-auto w-80 rounded-xl border border-slate-200 bg-white p-6 shadow-lg">
+              <h3 className="mb-2 text-base font-semibold text-slate-900">三步开始用</h3>
+              <ul className="text-sm text-slate-600">
+                <li className="py-1.5">📷 导入课表（拍照或粘贴）</li>
+                <li className="py-1.5">💬 说一句「周三晚 7 点复习高数」</li>
+                <li className="py-1.5">⏰ 到点会提醒你</li>
+              </ul>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

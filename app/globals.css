@@ -4,8 +4,8 @@
 
 :root {
   /* 极浅灰页面背景 + 偏冷的墨色文字 */
-  --background: #f7f8fa;
-  --foreground: #1f2333;
+  --background: #f8fafc;
+  --foreground: #0f172a;
   /* 声明浅色配色，防止部分手机浏览器的「强制深色」改写页面外观 */
   color-scheme: light;
 }
@@ -13,19 +13,18 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  /* 主色：冷调蓝 */
-  --color-primary: #2563eb;
-  --color-primary-soft: #eff4ff;
-  /* 卡片白底 + 1px 细边框 */
+  /* 主色：indigo-600 */
+  --color-primary: #4f46e5;
+  --color-primary-soft: #eef2ff;
+  /* 卡片白底 + 1px slate-200 细边框 */
   --color-card: #ffffff;
-  --color-line: #e5e7eb;
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-line: #e2e8f0;
 }
 
 body {
   background-color: var(--background);
   color: var(--foreground);
-  font-family: var(--font-sans), "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   -webkit-font-smoothing: antialiased;
 }
