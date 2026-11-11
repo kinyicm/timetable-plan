@@ -1,11 +1,13 @@
 "use client";
 
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import WeekGrid from "./components/WeekGrid";
 import EventDialog from "./components/EventDialog";
 import ImportTimetable from "./components/ImportTimetable";
-import type { ScheduleEvent } from "@/lib/types";
-import { loadEvents, saveEvents } from "@/lib/storage";
+import ReminderToast, { type ReminderItem } from "./components/ReminderToast";
+import GoalsView, { type GoalCreateInput } from "./components/GoalsView";
+import type { Goal, ScheduleEvent } from "@/lib/types";
+import { loadEvents, loadGoals, loadReminderEnabled, saveEvents, saveGoals, saveReminderEnabled } from "@/lib/storage";
 import { addDays, dateKey, minutesToLabel, startOfWeek } from "@/lib/time";
 import { findConflicts } from "@/lib/conflicts";
 
@@ -109,6 +111,34 @@ function executePlan(
   return { next, added, dropped };
 }
 
+/** 把「YYYY-MM-DD」+ 起始分钟数换算成当天的时间戳（本地时区）。 */
+function eventStartMs(date: string, startMin: number): number {
+  const [y, m, d] = date.split("-").map(Number);
+  return new Date(y, m - 1, d, 0, startMin).getTime();
+}
+
+function NavTab({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`h-8 cursor-pointer rounded-md px-3 text-sm font-medium transition-colors ${
+        active ? "bg-primary text-white" : "text-slate-600 hover:bg-slate-100"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
 type DialogState = { mode: "new" | "edit"; event: ScheduleEvent };
 
 export default function Home() {
@@ -124,10 +154,182 @@ export default function Home() {
   const [planReply, setPlanReply] = useState("");
   const [flashIds, setFlashIds] = useState<string[]>([]);
   const [showConflicts, setShowConflicts] = useState(false);
+  const [view, setView] = useState<"schedule" | "week" | "month" | "year">("schedule");
+  const [goals, setGoals] = useState<Goal[]>(() => loadGoals());
+  const [reminderEnabled, setReminderEnabled] = useState<boolean>(() => loadReminderEnabled());
+  const [toasts, setToasts] = useState<ReminderItem[]>([]);
+  const [notifPerm, setNotifPerm] = useState<NotificationPermission>(() =>
+    typeof Notification !== "undefined" ? Notification.permission : "default",
+  );
+
+  const audioRef = useRef<AudioContext | null>(null);
+  const remindedRef = useRef<Set<string>>(new Set());
+  const snoozeRef = useRef<Map<string, number>>(new Map());
 
   // 冲突由 lib/conflicts 的纯函数统一计算，网格与顶部提示条共用同一份结果。
   const conflicts = useMemo(() => findConflicts(events), [events]);
   const eventById = useMemo(() => new Map(events.map((e) => [e.id, e])), [events]);
+
+  // 音频解锁：用户首次交互时创建 AudioContext 并 resume（浏览器自动播放策略要求）。
+  useEffect(() => {
+    const unlock = () => {
+      if (audioRef.current) {
+        if (audioRef.current.state === "suspended") void audioRef.current.resume();
+        return;
+      }
+      try {
+        const w = window as unknown as {
+          AudioContext?: typeof AudioContext;
+          webkitAudioContext?: typeof AudioContext;
+        };
+        const AC = w.AudioContext ?? w.webkitAudioContext;
+        if (!AC) return;
+        audioRef.current = new AC();
+        void audioRef.current.resume();
+      } catch {
+        // 忽略：某些环境不支持 Web Audio
+      }
+    };
+    document.addEventListener("pointerdown", unlock, { once: true });
+    return () => document.removeEventListener("pointerdown", unlock);
+  }, []);
+
+  // 提醒扫描：每 30 秒扫一次，触发到点提醒（软件内弹窗 + 提示音 + 网格闪烁 + 系统通知）。
+  useEffect(() => {
+    if (!reminderEnabled) return;
+
+    const playBeep = () => {
+      const ctx = audioRef.current;
+      if (!ctx) return;
+      try {
+        if (ctx.state === "suspended") void ctx.resume();
+        const now = ctx.currentTime;
+        // 两声「滴-滴」：880Hz，每声 0.12s，间隔 0.1s（第二声从 0.22s 开始）
+        [0, 0.22].forEach((offset) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = "sine";
+          osc.frequency.value = 880;
+          const t0 = now + offset;
+          gain.gain.setValueAtTime(0.0001, t0);
+          gain.gain.exponentialRampToValueAtTime(0.25, t0 + 0.01);
+          gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.12);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(t0);
+          osc.stop(t0 + 0.14);
+        });
+      } catch {
+        // 忽略音频播放异常
+      }
+    };
+
+    const sendSystemNotification = (t: ReminderItem) => {
+      if (typeof Notification === "undefined") return;
+      if (Notification.permission !== "granted") return;
+      try {
+        new Notification("课表提醒", {
+          body: `${t.title} · ${t.timeLabel}${t.location ? " · " + t.location : ""}`,
+        });
+      } catch {
+        // 忽略：个别环境构造通知可能失败
+      }
+    };
+
+    const scan = () => {
+      const nowMs = Date.now();
+      const twoHoursMs = 2 * 60 * 60 * 1000;
+      const newToasts: ReminderItem[] = [];
+      const newFlash: string[] = [];
+
+      for (const ev of events) {
+        const remindBefore = ev.remindBeforeMin;
+        if (remindBefore == null || remindBefore <= 0) continue;
+        const startMs = eventStartMs(ev.date, ev.startMin);
+        if (startMs <= nowMs) continue; // 已开始，不提醒
+        if (startMs > nowMs + twoHoursMs) continue; // 不在未来 2 小时内，不扫
+        if (remindedRef.current.has(ev.id)) continue; // 本次会话已提醒过
+        const snoozeUntil = snoozeRef.current.get(ev.id);
+        if (snoozeUntil !== undefined) {
+          if (nowMs < snoozeUntil) continue; // 仍在「稍后提醒」窗口内
+          snoozeRef.current.delete(ev.id);
+        }
+        const remindAt = startMs - remindBefore * 60 * 1000;
+        if (nowMs < remindAt) continue;
+
+        remindedRef.current.add(ev.id);
+        const minutes = Math.max(0, Math.round((startMs - nowMs) / 60000));
+        newToasts.push({
+          id: genId(),
+          eventId: ev.id,
+          title: ev.title,
+          minutes,
+          date: ev.date,
+          timeLabel: `${minutesToLabel(ev.startMin)} - ${minutesToLabel(ev.endMin)}`,
+          location: ev.location,
+        });
+        newFlash.push(ev.id);
+      }
+
+      if (newToasts.length === 0) return;
+
+      playBeep();
+      setToasts((prev) => [...prev, ...newToasts].slice(-3)); // 最多同时显示 3 条
+      setFlashIds(newFlash);
+      setTimeout(() => setFlashIds([]), 3000); // 对应事件在网格闪烁 3 秒
+      newToasts.forEach(sendSystemNotification);
+    };
+
+    const id = setInterval(scan, 30_000);
+    return () => clearInterval(id);
+  }, [events, reminderEnabled]);
+
+  const handleDismiss = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  const handleSnooze = useCallback((id: string, eventId: string) => {
+    snoozeRef.current.set(eventId, Date.now() + 10 * 60 * 1000);
+    remindedRef.current.delete(eventId);
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  const handleToggleReminder = () => {
+    const next = !reminderEnabled;
+    setReminderEnabled(next);
+    saveReminderEnabled(next);
+  };
+
+  const handleEnableNotifications = async () => {
+    if (typeof Notification === "undefined") return;
+    const perm = await Notification.requestPermission();
+    setNotifPerm(perm);
+  };
+
+  const handleGoalCreate = (data: GoalCreateInput) => {
+    const goal: Goal = { id: genId(), ...data };
+    const next = [...goals, goal];
+    setGoals(next);
+    saveGoals(next);
+  };
+
+  const handleGoalRename = (id: string, title: string) => {
+    const next = goals.map((g) => (g.id === id ? { ...g, title } : g));
+    setGoals(next);
+    saveGoals(next);
+  };
+
+  const handleGoalToggleDone = (id: string) => {
+    const next = goals.map((g) => (g.id === id ? { ...g, done: !g.done } : g));
+    setGoals(next);
+    saveGoals(next);
+  };
+
+  const handleGoalDelete = (id: string) => {
+    const next = goals.filter((g) => g.id !== id);
+    setGoals(next);
+    saveGoals(next);
+  };
 
   const handleSlotClick = (date: string, startMin: number) => {
     setDialog({
@@ -252,13 +454,42 @@ export default function Home() {
   return (
     <main className="flex h-screen flex-col overflow-hidden">
       <header className="flex items-center justify-between border-b border-line bg-card px-4 py-3">
-        <h1 className="text-lg font-semibold text-slate-900">周视图</h1>
+        <nav className="flex items-center gap-1">
+          <NavTab active={view === "schedule"} onClick={() => setView("schedule")}>日程</NavTab>
+          <NavTab active={view === "week"} onClick={() => setView("week")}>周目标</NavTab>
+          <NavTab active={view === "month"} onClick={() => setView("month")}>月目标</NavTab>
+          <NavTab active={view === "year"} onClick={() => setView("year")}>年目标</NavTab>
+        </nav>
         <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={handleToggleReminder}
+            aria-pressed={reminderEnabled}
+            className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full border border-line bg-white px-3 text-xs text-slate-700 transition-colors hover:bg-slate-50"
+          >
+            <span
+              className={`h-2 w-2 rounded-full ${
+                reminderEnabled ? "bg-emerald-500" : "bg-slate-300"
+              }`}
+            />
+            提醒 {reminderEnabled ? "开" : "关"}
+          </button>
+          {typeof Notification !== "undefined" && notifPerm === "default" && (
+            <button
+              type="button"
+              onClick={() => void handleEnableNotifications()}
+              className="inline-flex h-8 cursor-pointer items-center rounded-full border border-line bg-white px-3 text-xs text-slate-700 transition-colors hover:bg-slate-50"
+            >
+              开启系统通知
+            </button>
+          )}
           <ImportTimetable weekStart={weekStart} onImport={handleImport} />
         </div>
       </header>
 
-      {conflicts.length > 0 && (
+      {view === "schedule" ? (
+        <>
+          {conflicts.length > 0 && (
         <div className="border-b border-amber-200 bg-amber-50 px-4 py-2">
           <button
             type="button"
@@ -322,6 +553,20 @@ export default function Home() {
           </button>
         </div>
       </div>
+        </>
+      ) : (
+        <GoalsView
+          level={view}
+          goals={goals}
+          events={events}
+          onCreate={handleGoalCreate}
+          onRename={handleGoalRename}
+          onToggleDone={handleGoalToggleDone}
+          onDelete={handleGoalDelete}
+        />
+      )}
+
+      <ReminderToast toasts={toasts} onDismiss={handleDismiss} onSnooze={handleSnooze} />
 
       {dialog && (
         <EventDialog
