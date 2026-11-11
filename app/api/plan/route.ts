@@ -5,9 +5,8 @@
  * 密钥只从服务端环境变量读取（ZHIPU_API_KEY），绝不接受客户端传入密钥。
  *
  * 职责边界：
- *   模型只负责「把自然语言翻译成结构化动作」；
- *   日期是否在本周、时间区间是否合法、标题是否为空这些确定性校验，
- *   全部由客户端（page.tsx）在真正执行动作前完成，不交给模型自行保证。
+ *   模型只负责「把自然语言翻译成语义」——输出「本周几 / 几点 / 多久」；
+ *   日期算术、时间换算、字段合法性校验全部由服务端程序完成，不交给模型自行保证。
  */
 
 // Vercel 最长执行时间（秒）。本地 dev 不强制，但保持一致。
@@ -94,7 +93,130 @@ function parseLoose(raw: string): unknown {
   return JSON.parse(raw.slice(start, end + 1));
 }
 
-/** 依据背景上下文拼出「把一句话转成增删动作」的提示词。 */
+/** 把「YYYY-MM-DD」加上若干天（用 UTC 计算，避免时区/夏令时干扰）。 */
+function addDaysToDateKey(dateKey: string, days: number): string {
+  const [y, m, d] = dateKey.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + days));
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    dt.getUTCDate(),
+  ).padStart(2, "0")}`;
+}
+
+/** 把任意值转成整数；非法返回 NaN。 */
+function asInt(v: unknown): number {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? n : NaN;
+}
+
+type ConvertedAddAction = {
+  op: "add";
+  date: string;
+  startMin: number;
+  endMin: number;
+  title: string;
+  kind: "course" | "task" | "event";
+  location: string;
+  remindBeforeMin?: number;
+};
+
+type ConvertedDeleteAction = {
+  op: "delete";
+  date: string;
+  matchTitle: string;
+};
+
+type ConvertedAction = ConvertedAddAction | ConvertedDeleteAction;
+
+/**
+ * 程序侧完成日期/时间换算与校验：
+ * date = weekStart + (day-1) 天，startMin = startHour*60 + startMinute，
+ * endMin = startMin + durationMin；不合法的条目丢弃并计数。
+ */
+function convertActions(
+  rawActions: unknown,
+  weekStart: string,
+): { actions: ConvertedAction[]; droppedCount: number } {
+  const actions = Array.isArray(rawActions) ? rawActions : [];
+  const result: ConvertedAction[] = [];
+  let droppedCount = 0;
+
+  for (const raw of actions) {
+    const a = (raw ?? {}) as Record<string, unknown>;
+    const op = a.op;
+
+    if (op === "delete") {
+      const matchTitle = typeof a.matchTitle === "string" ? a.matchTitle.trim() : "";
+      const day = asInt(a.day);
+      if (!matchTitle || !Number.isFinite(day) || day < 1 || day > 7) {
+        droppedCount++;
+        continue;
+      }
+      result.push({ op: "delete", date: addDaysToDateKey(weekStart, day - 1), matchTitle });
+      continue;
+    }
+
+    if (op !== "add") {
+      droppedCount++;
+      continue;
+    }
+
+    const ev = (a.event ?? {}) as Record<string, unknown>;
+    const title = typeof ev.title === "string" ? ev.title.trim() : "";
+    const day = asInt(ev.day);
+    const startHour = asInt(ev.startHour);
+    const durationMin = asInt(ev.durationMin);
+    const startMinuteRaw = asInt(ev.startMinute);
+    const startMinute = Number.isFinite(startMinuteRaw)
+      ? Math.max(0, Math.min(59, startMinuteRaw))
+      : 0;
+
+    if (!title) {
+      droppedCount++;
+      continue;
+    }
+    if (!Number.isFinite(day) || day < 1 || day > 7) {
+      droppedCount++;
+      continue;
+    }
+    if (!Number.isFinite(startHour) || startHour < 0 || startHour > 23) {
+      droppedCount++;
+      continue;
+    }
+    if (!Number.isFinite(durationMin) || durationMin < 15 || durationMin > 720) {
+      droppedCount++;
+      continue;
+    }
+
+    const startMin = startHour * 60 + startMinute;
+    const endMin = startMin + durationMin;
+    if (endMin > 1440) {
+      droppedCount++;
+      continue;
+    }
+
+    const kindRaw = typeof ev.kind === "string" ? ev.kind : "";
+    const kind: ConvertedAddAction["kind"] =
+      kindRaw === "course" || kindRaw === "task" || kindRaw === "event" ? kindRaw : "event";
+    const location = typeof ev.location === "string" ? ev.location.trim() : "";
+    const remindBeforeRaw = asInt(ev.remindBeforeMin);
+
+    result.push({
+      op: "add",
+      date: addDaysToDateKey(weekStart, day - 1),
+      startMin,
+      endMin,
+      title,
+      kind,
+      location,
+      remindBeforeMin:
+        Number.isFinite(remindBeforeRaw) && remindBeforeRaw > 0 ? remindBeforeRaw : undefined,
+    });
+  }
+
+  return { actions: result, droppedCount };
+}
+
+/** 依据背景上下文拼出「把一句话转成语义（不涉及日期算术）」的提示词。 */
 function buildPrompt(
   text: string,
   ctx: { today: string; weekStart: string; weekEnd: string; existing: string },
@@ -112,18 +234,23 @@ ${ctx.existing || "（暂无）"}
 JSON 结构固定如下：
 {
   "actions": [
-    { "op": "add" | "delete", "event": { "date": string, "startMin": number, "endMin": number, "title": string, "kind": "course" | "task" | "event" } }
+    { "op": "add", "event": { "day": number, "startHour": number, "startMinute": number, "durationMin": number, "title": string, "kind": "course" | "task" | "event", "location": string, "remindBeforeMin": number } },
+    { "op": "delete", "matchTitle": string, "day": number }
   ],
   "reply": "一句简短的中文回复"
 }
 
 必须遵守的规则：
-- date 必须是 YYYY-MM-DD 格式的真实日期，且必须落在本周范围内（${ctx.weekStart || "?"} 到 ${ctx.weekEnd || "?"}）。
-- 用户说「周三」「周四晚上」等相对说法时，必须换算成本周对应的真实日期，绝对不许编造日期。
-- startMin / endMin 是自当天 00:00 起的分钟数。「晚上 7 点」= 1140，「上午 9 点」= 540，「下午 3 点」= 900。endMin 必须大于 startMin。
+- 绝对不要输出 date、startMin、endMin 这些字段，也不要自己算日期或分钟数；你只给「本周几 / 几点 / 持续多久」的语义。
+- day 表示本周几：1=周一，2=周二，……，7=周日。用户说「周三」就写 day=3。
+- startHour 是开始的小时（0-23）。用户说「晚上 7 点」就写 startHour=19；「上午 9 点」= 9；「下午 3 点」= 15。
+- startMinute 是开始的分钟（0 或 30）。用户没说分钟就写 0。
+- durationMin 是持续分钟数。用户说「到 9 点」（从 19 点开始）就写 durationMin=120；「一小时」= 60。
 - title 必须是非空字符串，写清楚安排内容。
 - kind 取值：course（课程）、task（任务）、event（一般事件）；拿不准就用 event。
-- op=add 表示新增一条安排；op=delete 表示删除一条已有安排，此时 event 只需给 date 和 title，用于按「日期+标题」匹配删除。
+- location 是地点；认不出就写空字符串 ""，不要猜。
+- remindBeforeMin 是提前提醒分钟数（0 表示不提醒）；用户没提就写 0。
+- op=add 表示新增一条安排；op=delete 表示删除一条已有安排，此时给 matchTitle（要删的标题）和 day（星期几），不要给 event。
 - 若用户的话无需操作或无法理解，actions 返回空数组 []，reply 里说明原因。
 - 所有数字字段输出数字类型，不要加引号。
 - 只输出上面这一个 JSON。`;
@@ -217,11 +344,9 @@ export async function POST(req: Request) {
   try {
     const data = await chatOnce(key, buildPrompt(text, { today, weekStart, weekEnd, existing }));
     const d = (data ?? {}) as Record<string, unknown>;
-    // 只做最轻量的结构规整：actions 保证是数组、reply 保证是字符串；
-    // 语义校验（日期/时间/标题）留给客户端在真正执行前完成。
-    const actions = Array.isArray(d.actions) ? d.actions : [];
     const reply = typeof d.reply === "string" ? d.reply.trim() : "";
-    return Response.json({ ok: true, actions, reply });
+    const { actions, droppedCount } = convertActions(d.actions, weekStart);
+    return Response.json({ ok: true, actions, reply, droppedCount });
   } catch (e) {
     const err = e instanceof PlanError ? e : new PlanError("安排失败，请稍后重试");
     // 出口统一脱敏：任何返回给浏览器的错误文本都不允许出现密钥原文

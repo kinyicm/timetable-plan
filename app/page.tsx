@@ -20,77 +20,45 @@ function genId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-type PlanActionEvent = {
+type ConvertedPlanAction = {
+  op?: unknown;
   date?: unknown;
   startMin?: unknown;
   endMin?: unknown;
   title?: unknown;
   kind?: unknown;
+  location?: unknown;
+  remindBeforeMin?: unknown;
+  matchTitle?: unknown;
 };
 
-type PlanAction = {
-  op?: unknown;
-  event?: PlanActionEvent;
-};
-
-/** 校验并执行模型返回的增删动作：不合法的丢弃并计数，合法的返回新事件列表。 */
+/** 执行服务端已换算并校验好的增删动作：只按 op 执行，不再做日期换算或校验。 */
 function executePlan(
   rawActions: unknown,
   events: ScheduleEvent[],
-  weekStartKey: string,
-  weekEndKey: string,
-): { next: ScheduleEvent[]; added: ScheduleEvent[]; dropped: number } {
+): { next: ScheduleEvent[]; added: ScheduleEvent[] } {
   const actions = Array.isArray(rawActions) ? rawActions : [];
-  let dropped = 0;
   const added: ScheduleEvent[] = [];
   const deleteKeys = new Set<string>();
 
   for (const raw of actions) {
-    const a = (raw ?? {}) as PlanAction;
-    const ev = (a.event ?? {}) as PlanActionEvent;
-    const title = typeof ev.title === "string" ? ev.title.trim() : "";
-    const date = typeof ev.date === "string" ? ev.date : "";
-    const op = a.op;
+    const a = (raw ?? {}) as ConvertedPlanAction;
 
-    // 标题为空 → 丢弃
-    if (!title) {
-      dropped++;
+    if (a.op === "delete") {
+      const matchTitle = typeof a.matchTitle === "string" ? a.matchTitle.trim() : "";
+      const date = typeof a.date === "string" ? a.date : "";
+      if (matchTitle && date) deleteKeys.add(`${date}\u0000${matchTitle}`);
       continue;
     }
-    // 日期不在本周范围 → 丢弃
-    if (!date || date < weekStartKey || date > weekEndKey) {
-      dropped++;
-      continue;
-    }
+    if (a.op !== "add") continue;
 
-    // 删除：只按「日期 + 标题」匹配，不需要起止时间
-    if (op === "delete") {
-      deleteKeys.add(`${date}\u0000${title}`);
-      continue;
-    }
-    if (op !== "add") {
-      dropped++;
-      continue;
-    }
+    const title = typeof a.title === "string" ? a.title.trim() : "";
+    const date = typeof a.date === "string" ? a.date : "";
+    if (!title || !date) continue;
 
-    const startMin = Math.round(Number(ev.startMin));
-    const endMin = Math.round(Number(ev.endMin));
-    // 起止时间不在 0..1440 → 丢弃
-    if (!Number.isFinite(startMin) || !Number.isFinite(endMin)) {
-      dropped++;
-      continue;
-    }
-    if (startMin < 0 || startMin > 1440 || endMin < 0 || endMin > 1440) {
-      dropped++;
-      continue;
-    }
-    // 结束不晚于开始 → 丢弃
-    if (endMin <= startMin) {
-      dropped++;
-      continue;
-    }
-
-    const kindRaw = typeof ev.kind === "string" ? ev.kind : "";
+    const startMin = Math.round(Number(a.startMin));
+    const endMin = Math.round(Number(a.endMin));
+    const kindRaw = typeof a.kind === "string" ? a.kind : "";
     const kind: ScheduleEvent["kind"] =
       kindRaw === "course" || kindRaw === "task" || kindRaw === "event" ? kindRaw : "event";
 
@@ -101,6 +69,11 @@ function executePlan(
       startMin,
       endMin,
       kind,
+      location: typeof a.location === "string" ? a.location.trim() : undefined,
+      remindBeforeMin:
+        typeof a.remindBeforeMin === "number" && a.remindBeforeMin > 0
+          ? a.remindBeforeMin
+          : undefined,
     });
   }
 
@@ -108,7 +81,7 @@ function executePlan(
     .filter((e) => !deleteKeys.has(`${e.date}\u0000${e.title}`))
     .concat(added);
 
-  return { next, added, dropped };
+  return { next, added };
 }
 
 /** 把「YYYY-MM-DD」+ 起始分钟数换算成当天的时间戳（本地时区）。 */
@@ -406,6 +379,7 @@ export default function Home() {
         error?: string;
         actions?: unknown;
         reply?: unknown;
+        droppedCount?: unknown;
       };
       if (!json.ok) {
         // 出错：显示错误文字，输入框内容不清理
@@ -413,7 +387,7 @@ export default function Home() {
         return;
       }
 
-      const { next, added, dropped } = executePlan(json.actions, events, weekStartKey, weekEndKey);
+      const { next, added } = executePlan(json.actions, events);
       setEvents(next);
       saveEvents(next);
 
@@ -423,8 +397,9 @@ export default function Home() {
       }
 
       let reply = typeof json.reply === "string" ? json.reply : "";
-      if (dropped > 0) {
-        reply = `${reply}（已忽略 ${dropped} 条不合法的安排）`;
+      const droppedCount = typeof json.droppedCount === "number" ? json.droppedCount : 0;
+      if (droppedCount > 0) {
+        reply = `${reply}（已忽略 ${droppedCount} 条无法识别的安排）`;
       }
       setPlanReply(reply);
     } catch {
