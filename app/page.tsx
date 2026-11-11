@@ -435,15 +435,26 @@ export default function Home() {
   const handleClosePlanPreview = () => setPlanPreview(null);
 
   const handleSlotClick = (date: string, startMin: number) => {
+    // 点空白格新建：默认课程，课程 90 分钟 / 任务 60 / 事件 60。
+    const kind: ScheduleEvent["kind"] = "course";
+    const dur = kind === "course" ? 90 : 60;
+
+    // 智能接缝：同一列里若存在「结束 <= startMin 且间隔 < 30 分钟」的事件，
+    // 把 startMin 接到那个事件的结束时间上，避免留下难以点击的小缝隙。
+    const prev = events
+      .filter((e) => e.date === date && e.endMin <= startMin && startMin - e.endMin < 30)
+      .sort((a, b) => b.endMin - a.endMin)[0];
+    const snappedStart = prev ? prev.endMin : startMin;
+
     setDialog({
       mode: "new",
       event: {
         id: "",
         title: "",
         date,
-        startMin,
-        endMin: Math.min(startMin + 60, 1410),
-        kind: "course",
+        startMin: snappedStart,
+        endMin: Math.min(snappedStart + dur, 23 * 60 + 55),
+        kind,
       },
     });
   };

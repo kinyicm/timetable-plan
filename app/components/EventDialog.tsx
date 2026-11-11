@@ -1,10 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ScheduleEvent } from "@/lib/types";
-import { minutesToLabel } from "@/lib/time";
+import TimeWheel from "./TimeWheel";
 
-const TIME_OPTIONS = Array.from({ length: 48 }, (_, i) => i * 30);
+const DAY_END_MIN = 23 * 60 + 55; // 23:55
 
 const KIND_OPTIONS: { value: ScheduleEvent["kind"]; label: string }[] = [
   { value: "course", label: "课程" },
@@ -20,9 +20,26 @@ const REMIND_OPTIONS: { value: number; label: string }[] = [
   { value: 30, label: "提前 30 分钟" },
 ];
 
+const DURATION_OPTIONS: { label: string; min: number }[] = [
+  { label: "30 分", min: 30 },
+  { label: "1 小时", min: 60 },
+  { label: "1.5 小时", min: 90 },
+  { label: "2 小时", min: 120 },
+  { label: "3 小时", min: 180 },
+];
+
 const fieldLabel = "mb-1 block text-xs text-slate-500";
 const inputCls =
   "w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition-colors focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100";
+
+function formatDurationTotal(min: number): string {
+  if (min <= 0) return "共 0 分钟";
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  if (h === 0) return `共 ${m} 分钟`;
+  if (m === 0) return `共 ${h} 小时`;
+  return `共 ${h} 小时 ${m} 分`;
+}
 
 type EventDialogProps = {
   mode: "new" | "edit";
@@ -52,6 +69,20 @@ export default function EventDialog({
   const [titleError, setTitleError] = useState("");
   const [timeError, setTimeError] = useState("");
 
+  // 弹窗打开时锁定 body 滚动，关闭/Esc 时恢复；Esc 关闭。
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
   // 重叠检测：同一天、时间段相交（排除自身）。
   const overlap = useMemo(() => {
     if (endMin <= startMin) return null;
@@ -78,6 +109,11 @@ export default function EventDialog({
       setTimeError("结束时间必须晚于开始时间");
       return;
     }
+    if (endMin > DAY_END_MIN) {
+      setTitleError("");
+      setTimeError("结束时间不能晚于 23:55");
+      return;
+    }
     setTitleError("");
     setTimeError("");
     onSave({
@@ -98,7 +134,7 @@ export default function EventDialog({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md rounded-xl border border-slate-200 bg-white shadow-xl"
+        className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
@@ -131,36 +167,61 @@ export default function EventDialog({
             )}
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={fieldLabel}>开始时间</label>
-              <select
-                value={startMin}
-                onChange={(e) => setStartMin(Number(e.target.value))}
-                className={inputCls}
-              >
-                {TIME_OPTIONS.map((m) => (
-                  <option key={m} value={m}>
-                    {minutesToLabel(m)}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className={fieldLabel}>结束时间</label>
-              <select
-                value={endMin}
-                onChange={(e) => setEndMin(Number(e.target.value))}
-                className={inputCls}
-              >
-                {TIME_OPTIONS.map((m) => (
-                  <option key={m} value={m}>
-                    {minutesToLabel(m)}
-                  </option>
-                ))}
-              </select>
+          <div>
+            <label className={fieldLabel}>开始时间</label>
+            <TimeWheel
+              value={startMin}
+              onChange={(m) => {
+                const s = Math.max(0, Math.min(m, DAY_END_MIN - 15));
+                setStartMin(s);
+                if (endMin <= s) setEndMin(Math.min(s + 15, DAY_END_MIN));
+              }}
+              maxAllowed={DAY_END_MIN - 15}
+            />
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {DURATION_OPTIONS.map((d) => {
+                const active = endMin - startMin === d.min;
+                return (
+                  <button
+                    key={d.min}
+                    type="button"
+                    onClick={() => setEndMin(Math.min(startMin + d.min, DAY_END_MIN))}
+                    className={`cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                      active
+                        ? "bg-indigo-600 text-white"
+                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                    }`}
+                  >
+                    {d.label}
+                  </button>
+                );
+              })}
             </div>
           </div>
+
+          <div>
+            <label className={fieldLabel}>结束时间</label>
+            <TimeWheel
+              value={endMin}
+              onChange={(m) => {
+                if (m <= startMin) {
+                  setStartMin(Math.max(0, m - 15));
+                  setEndMin(m);
+                } else {
+                  setEndMin(Math.min(m, DAY_END_MIN));
+                }
+              }}
+              minAllowed={startMin + 15}
+              maxAllowed={DAY_END_MIN}
+            />
+            <p className="mt-1 text-xs text-slate-500">
+              {formatDurationTotal(endMin - startMin)}
+            </p>
+          </div>
+
+          {overlap && (
+            <p className="text-xs text-red-600">与「{overlap.title}」时间重叠</p>
+          )}
           {timeError && (
             <p className="text-xs text-red-600" role="alert">
               {timeError}
@@ -206,12 +267,6 @@ export default function EventDialog({
               ))}
             </select>
           </div>
-
-          {overlap && (
-            <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-700">
-              与「{overlap.title}」时间重叠
-            </p>
-          )}
         </div>
 
         <footer className="flex items-center justify-between gap-3 border-t border-slate-200 px-5 py-4">
