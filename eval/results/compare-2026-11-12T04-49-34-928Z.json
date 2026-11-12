@@ -1,0 +1,33 @@
+{
+  "generatedAt": "2026-11-12T04:49:34.928Z",
+  "groundTruth": "eval/timetable-groundtruth.json",
+  "results": [
+    {
+      "case": "baseline",
+      "metrics": {
+        "total": 10,
+        "returned": 0,
+        "matched": 0,
+        "dayAccuracy": 0,
+        "slotAccuracy": 0,
+        "locationAccuracy": 0,
+        "missing": [
+          "大学生创新创业教育",
+          "美育教育",
+          "体育",
+          "思想道德与法治",
+          "网页设计",
+          "职业生涯规划与就业指导",
+          "网络操作系统",
+          "人工智能导论",
+          "职业英语",
+          "程序设计基础"
+        ],
+        "extra": [],
+        "avgTimeErrorMinutes": null,
+        "periodsFrom": "识别结果",
+        "rows": []
+      }
+    }
+  ]
+}

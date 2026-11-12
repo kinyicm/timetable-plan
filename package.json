@@ -6,7 +6,9 @@
                     "dev":  "next dev",
                     "build":  "next build",
                     "start":  "next start",
-                    "lint":  "eslint"
+                    "lint":  "eslint",
+                    "eval:run":  "node eval/run.mjs",
+                    "eval:compare":  "node eval/compare.mjs"
                 },
     "dependencies":  {
                          "next":  "16.4.2",

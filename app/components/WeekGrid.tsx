@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ScheduleEvent } from "@/lib/types";
 import type { Conflict } from "@/lib/conflicts";
+import type { FreeSlot } from "@/lib/freeSlots";
 import { addDays, dateKey, formatWeekRange, minutesToLabel } from "@/lib/time";
 
 const HOUR_HEIGHT = 56;
@@ -33,6 +34,7 @@ type WeekGridProps = {
   onEventClick: (ev: ScheduleEvent) => void;
   flashIds?: string[];
   conflicts?: Conflict[];
+  freeSlots?: FreeSlot[];
 };
 
 export default function WeekGrid({
@@ -42,6 +44,7 @@ export default function WeekGrid({
   onEventClick,
   flashIds,
   conflicts,
+  freeSlots,
 }: WeekGridProps) {
   // 周视图可自行前后翻页，因此把传入的周起点作为初始值放进内部状态。
   const [weekStart, setWeekStart] = useState(initialWeekStart);
@@ -123,13 +126,22 @@ export default function WeekGrid({
         <span className="text-sm font-medium text-slate-800">
           {formatWeekRange(weekStart)}
         </span>
-        <button
-          type="button"
-          onClick={nextWeek}
-          className="inline-flex h-9 cursor-pointer items-center gap-1 rounded-md border border-line bg-white px-3 text-sm text-slate-700 transition-colors hover:border-slate-300 hover:bg-slate-50"
-        >
-          下一周 →
-        </button>
+        <div className="flex items-center gap-3">
+          <span className="flex items-center gap-1.5 text-xs text-slate-500">
+            <span
+              className="inline-block h-3.5 w-5 rounded-sm border-l-2 border-dashed border-emerald-300/60 bg-emerald-50/40"
+              aria-hidden
+            />
+            空闲时段
+          </span>
+          <button
+            type="button"
+            onClick={nextWeek}
+            className="inline-flex h-9 cursor-pointer items-center gap-1 rounded-md border border-line bg-white px-3 text-sm text-slate-700 transition-colors hover:border-slate-300 hover:bg-slate-50"
+          >
+            下一周 →
+          </button>
+        </div>
       </div>
 
       {/* 可滚动主体：横向 + 纵向 */}
@@ -219,6 +231,25 @@ export default function WeekGrid({
                   }}
                 />
               )}
+
+              {/* 空闲时段叠层：画在背景之上、事件之下，只展示不接收点击 */}
+              <div className="pointer-events-none absolute inset-0">
+                {(freeSlots ?? []).map((slot, i) => {
+                  const col = dateToIndex.get(slot.date);
+                  if (col === undefined) return null;
+                  const top = (slot.startMin / 60) * HOUR_HEIGHT;
+                  const height = ((slot.endMin - slot.startMin) / 60) * HOUR_HEIGHT;
+                  const left = (col * 100) / COL_COUNT;
+                  const width = 100 / COL_COUNT;
+                  return (
+                    <div
+                      key={`${slot.date}-${slot.startMin}-${i}`}
+                      className="absolute rounded-sm border-l-2 border-dashed border-emerald-300/60 bg-emerald-50/40"
+                      style={{ top, height, left: `${left}%`, width: `${width}%` }}
+                    />
+                  );
+                })}
+              </div>
 
               {/* 事件浮层：空白区域点击穿透到下方格子 */}
               <div className="pointer-events-none absolute inset-0">

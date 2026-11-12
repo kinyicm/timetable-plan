@@ -587,6 +587,8 @@ export default function Home() {
   const weekStart = startOfWeek(new Date());
   const weekStartKey = dateKey(weekStart);
   const weekEndKey = dateKey(addDays(weekStart, 6));
+  // 当前这一周的空档（08:00-23:00 减去所有事件），用于周视图网格上标注空闲时段。
+  const freeSlots = computeFreeSlots(events, weekStartKey, 7);
 
   return (
     <main className="flex h-screen flex-col overflow-hidden bg-slate-50">
@@ -695,6 +697,7 @@ export default function Home() {
           weekStart={weekStart}
           conflicts={conflicts}
           flashIds={flashIds}
+          freeSlots={freeSlots}
           onSlotClick={handleSlotClick}
           onEventClick={handleEventClick}
         />
