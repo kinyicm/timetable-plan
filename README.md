@@ -148,23 +148,46 @@ npm start
 
 ```
 app/
-├─ page.tsx                 首页：周视图 + 弹窗 + 导入 + AI 输入框
-├─ layout.tsx
-├─ components/
-│  ├─ WeekGrid.tsx          06:00-24:00 × 7 天网格与事件渲染
-│  ├─ EventDialog.tsx       事件新建/编辑/删除
-│  └─ ImportTimetable.tsx   拍照/选图 → 识别 → 校对表格
-└─ api/
-   ├─ recognize/route.ts    课表图片 → 结构化课表 JSON（智谱 GLM-4V）
-   └─ plan/route.ts         一句话 → 日程事件 actions（智谱 GLM-4）
+├─ page.tsx                    首页：周视图 + 全部弹窗 + AI 输入框 + 状态编排
+├─ layout.tsx                  全局布局、manifest、themeColor
+├─ manifest.ts                 PWA manifest
+├─ components/                 共 12 个
+│  ├─ WeekGrid.tsx             06:00-24:00 × 7 天网格、事件层、空档层、当前时间线
+│  ├─ ImportTimetable.tsx      拍照 → 压缩 → 识别 → 校对表 → 追加/覆盖导入
+│  ├─ EventDialog.tsx          事件新建/编辑/删除
+│  ├─ TimeWheel.tsx            两列轮盘选时间（滚轮逐项 / 双击输入 / 方向键）
+│  ├─ GoalsView.tsx            周 / 月 / 年目标列表与嵌套校验展示
+│  ├─ SyllabusPanel.tsx        知识点大纲（勾选 / 编辑 / 粘贴教材目录）
+│  ├─ AdvisePanel.tsx          三档方案对比卡片（可行性 + 优点 / 代价 / 风险）
+│  ├─ PlanPreview.tsx          规划结果预览与逐条剔除
+│  ├─ QuickAdd.tsx             点空白格的轻量新建气泡
+│  ├─ GoalClarify.tsx          目标澄清卡（每周几小时 / 截止日期）
+│  ├─ ReminderToast.tsx        右上角提醒卡片
+│  └─ ServiceWorkerRegister.tsx  PWA 注册（仅生产环境）
+└─ api/                        共 5 个接口
+   ├─ recognize/route.ts       课表图片 → 课程块（视觉模型 GLM-4V）
+   ├─ syllabus/route.ts        目标 → 知识点大纲
+   ├─ advise/route.ts          目标 → 可行性 + 三档方案
+   ├─ goal/route.ts            选定方案 + 知识点 → 事件
+   └─ plan/route.ts            一句话 → 单个事件（意图为"具体安排"时）
 
-lib/
-├─ types.ts        ScheduleEvent / Goal 数据模型
-├─ storage.ts      localStorage 读写（含 window 守卫与解析容错）
-├─ time.ts         分钟/日期/周起始换算（本地时区，不用 toISOString）
-├─ periods.ts      默认作息表：第 1–12 节 → 起止分钟
-├─ image.ts        客户端图片压缩
-└─ conflicts.ts    冲突检测纯函数
+lib/                            共 15 个
+├─ types.ts            数据模型（ScheduleEvent / Goal / KnowledgePoint）
+├─ storage.ts          localStorage 读写（含 window 守卫与解析容错）
+├─ time.ts             分钟 / 日期 / 周起始换算（本地时区，不用 toISOString）
+├─ periods.ts          默认作息：11 节真实时间（第 11 节为原表未标注、按第 10 节推算）
+├─ freeSlots.ts        从事件算空闲时段（纯函数）
+├─ conflicts.ts        冲突检测（纯函数）
+├─ goals.ts            目标嵌套校验（纯函数）
+├─ blocksToCourses.ts  识别课程块 → 课程（列/节次换算、可疑标记）
+├─ image.ts            客户端图片压缩
+├─ llm.ts              上游调用、JSON 抠取、错误映射、脱敏
+├─ rateLimit.ts        客户端 IP 解析与滑动窗口限流
+├─ intent.ts           输入意图路由（具体安排 / 目标）
+├─ history.ts          撤销栈
+├─ guessKind.ts        按时间段猜事件类型与默认时长
+└─ parseTime.ts        时间文本容错解析（19:30 / 1930 / 930）
+
 ```
 
 **技术栈**：Next.js 16.4.2（App Router + Turbopack）· React 19.3 · TypeScript 5 · Tailwind CSS 4
@@ -200,7 +223,8 @@ lib/
 ### 3. 浏览器是不可信客户端
 
 - 模型 Key 只存在服务端环境变量，**永不下发**。
-- 五个接口（recognize / syllabus / advise / goal / plan）都带滑动窗口限流（单 IP 每分钟 10 次），密钥只从服务端环境变量读取，错误出口统一脱敏。
+- 五个接口都带滑动窗口限流（按客户端 IP，60 秒窗口）：`/api/plan` 与 `/api/recognize` **10 次/分钟**（高频操作），`/api/goal`、`/api/advise`、`/api/syllabus` **5 次/分钟**（低频重操作）。
+- 模型密钥只从服务端环境变量读取，永远不会下发到浏览器；错误出口统一脱敏。
 - 请求体积上限：图片 base64 8 MB、文本 500 字。
 - 所有返回给浏览器的错误文本统一脱敏：若含 Key，替换为 `***`。
 
