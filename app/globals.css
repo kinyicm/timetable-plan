@@ -19,6 +19,21 @@
   /* 卡片白底 + 1px slate-200 细边框 */
   --color-card: #ffffff;
   --color-line: #e2e8f0;
+  /* 三类事件语义色：课程蓝 / 任务绿 / 事件灰（色档沿用 Tailwind blue/emerald/slate） */
+  --color-course-50: #eff6ff;
+  --color-course-500: #3b82f6;
+  --color-course-600: #2563eb;
+  --color-task-50: #ecfdf5;
+  --color-task-500: #10b981;
+  --color-task-600: #059669;
+  --color-event-50: #f1f5f9;
+  --color-event-500: #94a3b8;
+  --color-event-600: #64748b;
+  /* 时间带弱化灰：周末列 / 晚间 / 深夜，另加午休极淡暖灰 */
+  --color-weekend: rgb(203 213 225 / 0.18);
+  --color-offhour: #eef2f7;
+  --color-midnight: #f8fafc;
+  --color-noon: #faf6ef;
 }
 
 body {

@@ -11,6 +11,8 @@ export interface ScheduleEvent {
   location?: string;
   remindBeforeMin?: number;
   goalId?: string;
+  /** 导入批次标识，同一批（一门课 × 多周实例）共享一个 groupId，便于整批删除。 */
+  groupId?: string;
   unverified?: boolean;
 }
 
@@ -28,4 +30,19 @@ export interface Goal {
   hoursPerWeek?: number;
   /** 优先级 */
   priority?: "高" | "中" | "低";
+}
+
+export interface KnowledgePoint {
+  id: string;
+  /** 具体知识点，如「洛必达法则」 */
+  name: string;
+  /** 所属章节，如「导数应用」；没有就空字符串 */
+  category: string;
+  difficulty: "基础" | "进阶" | "难点";
+  /** 学习该知识点预估分钟数，30..240 */
+  estimatedMinutes: number;
+  /** 学习顺序，从 1 开始 */
+  order: number;
+  /** 预留：后续做覆盖率追踪 */
+  mastered?: boolean;
 }
