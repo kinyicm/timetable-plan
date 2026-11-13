@@ -1,4 +1,6 @@
-import { gridToCourses, type Course } from "@/lib/gridToCourses";
+import { blocksToCourses, type Course } from "@/lib/blocksToCourses";
+import { chatOnce, desensitize, LlmError, type LlmMessage } from "@/lib/llm";
+import { checkRateLimit } from "@/lib/rateLimit";
 
 /**
  * 课表规划 · 课表识别接口
@@ -7,8 +9,8 @@ import { gridToCourses, type Course } from "@/lib/gridToCourses";
  * 密钥只从服务端环境变量读取（ZHIPU_API_KEY），永远不会下发到浏览器。
  *
  * 注意本接口的职责边界：
- *   模型只负责「把图片读成结构化网格」（照抄格子）；
- *   星期换算、纵向合并、字段取值校验全部由程序完成。
+ *   模型只负责「把每一门课抽成一条课程块」；
+ *   星期 / 节次取值范围、区间方向等确定性校验全部由程序完成。
  */
 
 // Node.js 运行时（Cache Components 下不再显式声明 runtime，默认即 Node）。
@@ -17,8 +19,6 @@ export const maxDuration = 60;
 
 /** 模型名：可换模型而不改代码（如换 glm-4v 系或 glm-4.5v）。 */
 const MODEL = process.env.ZHIPU_VISION_MODEL ?? "glm-4v-flash";
-/** 智谱 OpenAI 兼容 `chat/completions` 接口。 */
-const ENDPOINT = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
 
 /** 与智谱接口基准超时（秒）对齐，略小于 maxDuration 留余量。 */
 const FETCH_TIMEOUT_MS = 50_000;
@@ -30,95 +30,35 @@ const FETCH_TIMEOUT_MS = 50_000;
  */
 const MAX_IMAGE_BASE64 = 8 * 1024 * 1024;
 
-/** 是否本地开发（本地不限流，方便调试）。 */
-const IS_DEV =
-  process.env.NODE_ENV !== "production" || process.env.DISABLE_RATE_LIMIT === "1";
-
-/** 限流窗口与额度：单 IP 每分钟最多 10 次识别。 */
-const RATE_WINDOW_MS = 60_000;
-const RATE_MAX = 10;
-const rateBuckets = new Map<string, number[]>();
-
-/**
- * 兼容 IPv6 简写（::1）与 IPv4。
- *
- * 注意信任边界：x-forwarded-for 可被伪造，只有 rt / x-real-ip 与 last hop 更可信。
- * 本函数优先取 x-real-ip，其次取 XFF 的最后一段（离服务器最近的一跳），
- * 都取不到时退化为 "unknown"（所有未知来源共享一个桶，宁可误伤不可放开）。
- */
-function getClientIp(req: Request): string {
-  const real = req.headers.get("x-real-ip");
-  if (real) return real.trim();
-  const xff = req.headers.get("x-forwarded-for");
-  if (xff) {
-    const parts = xff.split(",").map((s) => s.trim()).filter(Boolean);
-    if (parts.length > 0) return parts[parts.length - 1];
-  }
-  return "unknown";
-}
-
-/**
- * 滑动窗口限流：返回 null 表示放行，返回字符串表示拒绝原因。
- * 仅走服务端内置 Key 时生效（本项目目前没有「自带 Key」分支）。
- *
- * 已知局限：计数器存在进程内存里，本地/单实例有效；部署到多实例平台后
- * 各实例各算各的，冷启动还会重置。要做严格的全局限流需要外部存储（如 Redis）。
- */
-function checkRateLimit(req: Request): string | null {
-  if (IS_DEV) return null;
-  const ip = getClientIp(req);
-  const now = Date.now();
-  const bucket = (rateBuckets.get(ip) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
-  if (bucket.length >= RATE_MAX) {
-    rateBuckets.set(ip, bucket);
-    return `识别过于频繁（每分钟最多 ${RATE_MAX} 次），请稍后再试`;
-  }
-  bucket.push(now);
-  rateBuckets.set(ip, bucket);
-  // 简单清理，防止 Map 无限增长
-  if (rateBuckets.size > 5000) {
-    for (const [k, v] of rateBuckets) {
-      if (v.every((t) => now - t >= RATE_WINDOW_MS)) rateBuckets.delete(k);
-    }
-  }
-  return null;
-}
-
-/** 把可能出现在错误文本里的密钥替换成 ***，避免上游报错把密钥透回浏览器。 */
-function desensitize(text: string, key: string): string {
-  if (!key) return text;
-  return text.split(key).join("***");
-}
-
-type Payload = string | { type: string; text?: string; image_url?: { url: string } };
-
-// 识别错误：带 HTTP 状态码，便于外层区分 401/429 等。
-class RecognError extends Error {
-  status: number;
-  constructor(message: string, status = 500) {
-    super(message);
-    this.status = status;
-  }
-}
-
-const PROMPT_CORE = `请识别这张「课程表」图片，把它照抄成一个二维网格。严格只输出一个 JSON 对象，不要输出任何解释文字，不要用 markdown 代码块包裹。
+const PROMPT_CORE = `请识别这张「课程表」图片，把每一门课抽成一条记录。严格只输出一个 JSON 对象，不要输出任何解释文字，不要用 markdown 代码块包裹。
 
 JSON 结构固定如下：
 {
-  "slotsPerDay": number,
+  "slotCount": number,
+  "colCount": number,
   "periods": [{ "slot": number, "start": string, "end": string }],
-  "columns": [{ "index": number, "label": string }],
-  "rows": [{ "slot": number, "cells": string[] }]
+  "blocks": [{
+    "name": string,
+    "colIndex": number,
+    "rowStart": number,
+    "rowEnd": number,
+    "leftRatio": number,
+    "location": string,
+    "weeks": string
+  }]
 }
 
 必须遵守的规则：
-- columns 按图片从左到右列出表头文字（如 一/二/三 或 星期一/星期二…星期日）。index 从 1 开始，对应星期几（1=周一 …… 7=周日）。表头里混有日期数字时忽略数字，只保留「星期」文字。
-- rows 按图片从上到下逐行照抄。slot 用左侧的节次编号（1、2、3…）；左侧若同时印了时间，也一并填进 periods。
-- 每一行的 cells 长度必须等于 columns 的长度，一一对应。一个格子里放该格子的全部文字（课程名、地点、周次都保留原文，用空格分隔）。
-- 空格子用空字符串 ""。
-- 不要做任何「这门课属于星期几」「连上几节」的判断——那是程序的事，你只照抄每个格子里的文字。
-- slotsPerDay 是这张表一天最多有几节（看左侧节次编号的最大值）。认不出就输出 12。
-- periods 只在表头/左侧出现「08:00-09:40」这类具体时间时才输出，否则输出空数组 []。
+- 一门课输出一条 block。
+- colIndex 是你自己判断的「第几列」，1=周一、2=周二 … 7=周日。优先看表头里的「一/二/三/…/日」文字来定，忽略表头里的日期数字。
+- rowStart / rowEnd 是你自己判断的「第几节」：看该块在纵向对应的左侧节次编号。rowStart 是起始节次，rowEnd 是结束节次（含两端）。若某块明显占到多行，rowEnd 要相应增大，不要永远等于 rowStart。
+- leftRatio 只填一个数：该块中心相对「表体」横向的比例（0..1）。以表体为准：第 1 列左边界 = 0，最后一列右边界 = 1；不要包含左侧节次文字区与表头。它只用于程序校验你的 colIndex，允许有误差。
+- slotCount 是整张表一共几行节次（看左侧节次编号的最大值，例如 11）。
+- colCount 是一共几列（周一到周日就是 7）。
+- location 是上课地点；认不出就输出空字符串 ""，不要猜。
+- 「非本周」「单周」「双周」写进 weeks，并从 name 里去掉；没有就输出空字符串 ""。
+- name 只写课程名，不要带地点、不要带「（一）」这类序号后缀。
+- periods 只在左侧出现「08:00-09:40」这类具体时间时才输出，否则输出空数组 []。
 - 所有数字字段输出数字类型，不要加引号。
 - 只输出上面这一个 JSON，前后不要有任何多余文字或代码块。`;
 
@@ -126,39 +66,27 @@ JSON 结构固定如下：
 const PROMPT_REINFORCE = "再次强调：只输出 JSON，不要任何其他文字";
 
 /**
- * 从模型回复里截取第一个 "{" 到最后一个 "}" 之间的内容再 parse。
- * 这样即使模型把 JSON 包在 markdown 代码块、或前后混了一点解释文字，
- * 也能把 JSON 主体抠出来，避免 JSON.parse 整段失败。
- */
-function parseLoose(raw: string): unknown {
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) {
-    throw new RecognError("JSON 解析失败：模型未返回可用的 JSON");
-  }
-  return JSON.parse(raw.slice(start, end + 1));
-}
-
-/**
- * 程序侧把模型返回的网格规整成最终结构，并调用 gridToCourses 换算坐标。
+ * 程序侧把模型返回的课程块列表规整成最终结构，并调用 blocksToCourses 换算坐标。
  *
- * 这一步是「程序负责确定性」的部分：模型只负责照抄格子，
- * 而星期换算、纵向合并、节次区间、课程名/地点/周次拆分这些**有明确对错**的判断，
+ * 这一步是「程序负责确定性」的部分：模型只负责抽出每一门课，
+ * 而星期 / 节次取值范围、区间方向这些**有明确对错**的判断，
  * 全部在这里用代码做，不交给模型自行决定，也不让非法数据流向界面。
  */
 function buildData(raw: unknown): {
   slotsPerDay: number;
   periods: { slot: number; start: string; end: string }[];
   courses: Course[];
-  grid: unknown;
-  droppedCount: number;
+  invalidCount: number;
+  colCount: number;
+  spanSuspect: boolean;
+  suspectCount: number;
 } {
   if (!raw || typeof raw !== "object") {
-    throw new RecognError("JSON 解析失败：模型返回结构异常");
+    throw new LlmError("JSON 解析失败：模型返回结构异常");
   }
   const d = raw as Record<string, unknown>;
 
-  const slotsPerDay = clampInt(d.slotsPerDay, 1, 30, 12);
+  const slotsPerDay = clampInt(d.slotCount, 1, 30, 11);
 
   const periodsRaw = Array.isArray(d.periods) ? d.periods : [];
   const periods = periodsRaw
@@ -172,9 +100,9 @@ function buildData(raw: unknown): {
     })
     .filter((p) => p.slot > 0);
 
-  const { courses, droppedCount } = gridToCourses(raw);
+  const { courses, invalidCount, colCount, spanSuspect, suspectCount } = blocksToCourses(raw);
 
-  return { slotsPerDay, periods, courses, grid: raw, droppedCount };
+  return { slotsPerDay, periods, courses, invalidCount, colCount, spanSuspect, suspectCount };
 }
 
 /** 识别成功后的最终返回结构。 */
@@ -189,65 +117,25 @@ function clampInt(v: unknown, min: number, max: number, fallback: number): numbe
 }
 
 /**
- * 单次调用智谱接口并返回解析后的 JSON（不做重试）。
+ * 单次调用视觉模型（不做重试）。
  * imageValue 支持两种形式：
  *   1) `data:${mimeType};base64,${base64}` —— 标准 data URL，多数情况下可用；
  *   2) 裸 base64 字符串 —— 部分版本要求 image_url.url 直接给 base64。
  * 两种都兼容：出错时外层切换/重试。
  */
-async function chatOnce(
-  key: string,
-  imageValue: string,
-  prompt: string,
-): Promise<unknown> {
-  const content: Payload[] = [
+function visionChat(key: string, imageValue: string, prompt: string): Promise<unknown> {
+  const content: LlmMessage[] = [
     { type: "text", text: prompt },
     { type: "image_url", image_url: { url: imageValue } },
   ];
-
-  let resp: Response;
-  try {
-    resp = await fetch(ENDPOINT, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [{ role: "user", content }],
-      }),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-  } catch (e) {
-    // AbortSignal.timeout 抛出的超时错误
-    if (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError")) {
-      throw new RecognError("识别超时，请稍后重试");
-    }
-    throw new RecognError("无法连接识别服务，请检查网络");
-  }
-
-  if (!resp.ok) {
-    const detail = await resp.text().catch(() => "");
-    if (resp.status === 401) {
-      throw new RecognError("密钥无效（401）：服务端 ZHIPU_API_KEY 配置不正确", 401);
-    }
-    if (resp.status === 429) {
-      throw new RecognError("请求过于频繁，模型限流（429），请稍后再试", 429);
-    }
-    throw new RecognError(
-      `识别服务返回错误（${resp.status}）：${desensitize(detail, key).slice(0, 200)}`,
-    );
-  }
-
-  const json = await resp.json().catch(() => {
-    throw new RecognError("模型接口响应不是合法 JSON");
+  return chatOnce({
+    key,
+    model: MODEL,
+    content,
+    timeoutMs: FETCH_TIMEOUT_MS,
+    service: "识别",
+    timeoutMessage: "识别超时，请稍后重试",
   });
-  const text = json?.choices?.[0]?.message?.content;
-  if (typeof text !== "string" || !text.trim()) {
-    throw new RecognError("模型未返回内容");
-  }
-  return parseLoose(text);
 }
 
 /** 完整识别流程：首次用 data URL；失败则自动重试 1 次，切换图片形式 + 强化提示词。 */
@@ -259,15 +147,15 @@ async function recognize(
   const asDataUrl = `data:${mimeType || "image/jpeg"};base64,${imageBase64}`;
   // 首次：data URL 形式
   try {
-    return buildData(await chatOnce(key, asDataUrl, PROMPT_CORE));
+    return buildData(await visionChat(key, asDataUrl, PROMPT_CORE));
   } catch (e) {
     // 若首次是密钥/限流等确定性问题，没必要退到第二种图片形式再试
-    if (e instanceof RecognError && (e.status === 401 || e.status === 429)) {
+    if (e instanceof LlmError && (e.status === 401 || e.status === 429)) {
       throw e;
     }
     // 重试：改用裸 base64，并在提示词末尾追加强调（同时覆盖 image 形式与 JSON 风格两类失败）
     return buildData(
-      await chatOnce(key, imageBase64, PROMPT_CORE + "\n\n" + PROMPT_REINFORCE),
+      await visionChat(key, imageBase64, PROMPT_CORE + "\n\n" + PROMPT_REINFORCE),
     );
   }
 }
@@ -282,7 +170,7 @@ export async function POST(req: Request) {
   }
 
   // 限流放在解析请求体之前：非法/超量请求不应该占用配额计数，也不该消耗带宽
-  const limited = checkRateLimit(req);
+  const limited = checkRateLimit(req, "recognize", 10, "识别");
   if (limited) {
     return Response.json({ ok: false, error: limited }, { status: 429 });
   }
@@ -318,17 +206,41 @@ export async function POST(req: Request) {
   const t0 = Date.now();
   try {
     const data = await recognize(key, imageBase64, mimeType ?? "image/jpeg");
+
+    // 列数必须在 6..7：图里有时间列 / 周六日拆开等导致列数异常时，
+    // 显式失败而不是把第 8 列静默压到周日。
+    if (!Number.isFinite(data.colCount) || (data.colCount !== 6 && data.colCount !== 7)) {
+      const detail = Number.isFinite(data.colCount)
+        ? `识别到 ${data.colCount} 列`
+        : "未能识别列数";
+      return Response.json(
+        {
+          ok: false,
+          error: `课表列数识别异常（${detail}），请换一张更清晰的截图或改用手动录入`,
+        },
+        { status: 422 },
+      );
+    }
+
+    // 绝不再静默清零：一门课都没识别出来时，明确返回失败，而不是让前端看到空表格。
+    if (data.courses.length === 0) {
+      return Response.json(
+        {
+          ok: false,
+          error: "未能从图片中识别出任何课程，请换一张更清晰的截图，或改用手动录入",
+        },
+        { status: 422 },
+      );
+    }
+
     return Response.json({
       ok: true,
       data,
-      // droppedCount 顶层暴露，便于调用方不展开 data 也能读到；
-      // data 内保留一份，兼容前端 ImportTimetable 的既有读取路径。
-      droppedCount: data.droppedCount,
       model: MODEL,
       durationMs: Date.now() - t0,
     });
   } catch (e) {
-    const err = e instanceof RecognError ? e : new RecognError("识别失败，请稍后重试");
+    const err = e instanceof LlmError ? e : new LlmError("识别失败，请稍后重试");
     // 出口统一脱敏：任何返回给浏览器的错误文本都不允许出现密钥原文
     return Response.json(
       { ok: false, error: desensitize(err.message, key) },

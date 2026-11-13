@@ -4,7 +4,7 @@ import { useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import type { ScheduleEvent } from "@/lib/types";
 import { addDays, dateKey } from "@/lib/time";
-import { slotToRange } from "@/lib/periods";
+import { DEFAULT_PERIODS, slotToRange, type Period } from "@/lib/periods";
 import { compressImage } from "@/lib/image";
 
 type ReviewCourse = {
@@ -13,6 +13,8 @@ type ReviewCourse = {
   startSlot: number;
   endSlot: number;
   location: string;
+  remindBeforeMin: number;
+  suspect?: boolean;
 };
 
 type RecognizeResponse = {
@@ -25,8 +27,13 @@ type RecognizeResponse = {
       startSlot: number;
       endSlot: number;
       location: string;
+      suspect?: boolean;
     }[];
-    droppedCount: number;
+    invalidCount: number;
+    spanSuspect?: boolean;
+    suspectCount?: number;
+    slotsPerDay?: number;
+    periods?: { slot: number; start: string; end: string }[];
   };
 };
 
@@ -40,6 +47,20 @@ const DAY_OPTIONS = [
   { value: 7, label: "周日" },
 ];
 
+const REMIND_OPTIONS = [
+  { value: 0, label: "不提醒" },
+  { value: 5, label: "提前 5 分钟" },
+  { value: 10, label: "提前 10 分钟" },
+  { value: 15, label: "提前 15 分钟" },
+];
+
+const WEEKS_OPTIONS = [
+  { value: 1, label: "1 周" },
+  { value: 4, label: "4 周" },
+  { value: 8, label: "8 周" },
+  { value: 16, label: "16 周" },
+];
+
 const cellInput =
   "w-full rounded-md border border-line bg-white px-2 py-1 text-sm text-slate-800 outline-none transition-colors focus:border-primary";
 
@@ -50,11 +71,45 @@ function genId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+/** 生成导入批次时间戳，作为 groupId 前缀，便于整批删除。 */
+function genImportStamp(): string {
+  return Date.now().toString(36);
+}
+
 function clampSlot(n: number): number {
   const v = Math.round(Number(n));
   if (!Number.isFinite(v) || v < 1) return 1;
   if (v > 12) return 12;
   return v;
+}
+
+/**
+ * 把识别返回的 periods（{ slot, start, end }[]）合并进默认作息，
+ * 得到按「节次 - 1」索引的 Period[]。识别值只覆盖给出了的节次，其余保持默认。
+ */
+function mergePeriods(
+  recognized: { slot: number; start: string; end: string }[],
+  slotsPerDay: number,
+): Period[] {
+  const count = Math.max(1, Math.round(slotsPerDay) || DEFAULT_PERIODS.length);
+  const arr: Period[] = Array.from({ length: count }, (_, i) => {
+    const d = DEFAULT_PERIODS[i];
+    return d ? { start: d.start, end: d.end } : { start: "", end: "" };
+  });
+  for (const p of recognized) {
+    const idx = Math.round(p.slot) - 1;
+    if (idx >= 0 && idx < arr.length && p.start && p.end) {
+      arr[idx] = { start: p.start, end: p.end };
+    }
+  }
+  return arr;
+}
+
+/** 返回第 slot 节的「开始-结束」展示文本；无时间时返回 "—"。 */
+function periodLabel(slot: number, periods: Period[]): string {
+  const p = periods[Math.min(Math.max(Math.round(slot) - 1, 0), periods.length - 1)];
+  if (!p || !p.start || !p.end) return "—";
+  return `${p.start}-${p.end}`;
 }
 
 type ImportTimetableProps = {
@@ -75,7 +130,10 @@ export default function ImportTimetable({
   >("idle");
   const [errorMessage, setErrorMessage] = useState("");
   const [rows, setRows] = useState<ReviewCourse[]>([]);
-  const [droppedCount, setDroppedCount] = useState(0);
+  const [invalidCount, setInvalidCount] = useState(0);
+  const [spanSuspect, setSpanSuspect] = useState(false);
+  const [weeks, setWeeks] = useState(4);
+  const [periods, setPeriods] = useState<Period[]>(() => DEFAULT_PERIODS.map((p) => ({ ...p })));
 
   const openPicker = () => fileRef.current?.click();
 
@@ -116,9 +174,13 @@ export default function ImportTimetable({
           startSlot: c.startSlot,
           endSlot: c.endSlot,
           location: c.location ?? "",
+          remindBeforeMin: 10,
+          suspect: c.suspect === true,
         })),
       );
-      setDroppedCount(json.data.droppedCount ?? 0);
+      setInvalidCount(json.data.invalidCount ?? 0);
+      setSpanSuspect(json.data.spanSuspect === true);
+      setPeriods(mergePeriods(json.data.periods ?? [], json.data.slotsPerDay ?? 0));
       setStatus("review");
     } catch {
       setErrorMessage("识别失败，请检查网络后重试");
@@ -134,35 +196,47 @@ export default function ImportTimetable({
     setRows((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const handleConfirm = (mode: "append" | "replace") => {
-    const events: ScheduleEvent[] = rows
-      .filter((r) => r.name.trim())
-      .map((r): ScheduleEvent => {
-        const startSlot = clampSlot(r.startSlot);
-        const endSlot = Math.max(startSlot, clampSlot(r.endSlot));
-        const start = slotToRange(startSlot);
-        const end = slotToRange(endSlot);
-        return {
-          id: genId(),
-          title: r.name.trim(),
-          date: dateKey(addDays(weekStart, r.day - 1)),
-          startMin: start.startMin,
-          endMin: end.endMin,
-          kind: "course",
-          location: r.location.trim() || undefined,
-          unverified: true,
-        };
-      });
+  const updatePeriod = (index: number, field: "start" | "end", value: string) => {
+    setPeriods((prev) => prev.map((p, i) => (i === index ? { ...p, [field]: value } : p)));
+  };
 
-    if (events.length === 0) {
+  const handleConfirm = (mode: "append" | "replace") => {
+    const validRows = rows.filter((r) => r.name.trim());
+    if (validRows.length === 0) {
       close();
       return;
     }
 
+    // 同一批导入共享一个时间戳，groupId 便于以后整批删除。
+    const stamp = genImportStamp();
+    const events: ScheduleEvent[] = [];
+    validRows.forEach((r, idx) => {
+      const groupId = `import-${stamp}-${idx}`;
+      const startSlot = clampSlot(r.startSlot);
+      const endSlot = Math.max(startSlot, clampSlot(r.endSlot));
+      const start = slotToRange(startSlot, periods);
+      const end = slotToRange(endSlot, periods);
+      // 从当前周起，为每一周各生成一条实例：日期 = weekStart + (day-1) + 7*w。
+      for (let w = 0; w < weeks; w++) {
+        events.push({
+          id: genId(),
+          title: r.name.trim(),
+          date: dateKey(addDays(weekStart, r.day - 1 + 7 * w)),
+          startMin: start.startMin,
+          endMin: end.endMin,
+          kind: "course",
+          location: r.location.trim() || undefined,
+          remindBeforeMin: r.remindBeforeMin > 0 ? r.remindBeforeMin : undefined,
+          groupId,
+          unverified: true,
+        });
+      }
+    });
+
     // 覆盖导入前先确认一次，避免误删既有课程。
     if (mode === "replace") {
       const ok = window.confirm(
-        `将删除当前课表中的 ${courseCount} 门课程（不影响你自己添加的任务与计划），并导入新的 ${events.length} 门课。确定吗？`,
+        `将删除当前课表中的 ${courseCount} 门课程（不影响你自己添加的任务与计划），并导入新的 ${validRows.length} 门课。确定吗？`,
       );
       if (!ok) return;
     }
@@ -170,22 +244,26 @@ export default function ImportTimetable({
     onImport(events, mode);
     setStatus("idle");
     setRows([]);
-    setDroppedCount(0);
+    setInvalidCount(0);
+    setSpanSuspect(false);
   };
 
   const close = () => {
     setStatus("idle");
     setRows([]);
-    setDroppedCount(0);
+    setInvalidCount(0);
+    setSpanSuspect(false);
     setErrorMessage("");
   };
+
+  const hasSuspect = rows.some((r) => r.suspect === true);
 
   return (
     <>
       <button
         type="button"
         onClick={openPicker}
-        className="inline-flex h-9 cursor-pointer items-center gap-1 rounded-md border border-line bg-white px-3 text-sm text-slate-700 transition-colors hover:border-slate-300 hover:bg-slate-50"
+        className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-full bg-primary px-4 text-sm font-medium text-white transition-opacity hover:opacity-90"
       >
         📷 拍照上传课表
       </button>
@@ -253,9 +331,9 @@ export default function ImportTimetable({
                 (rows.length === 0 ? (
                   <div className="py-8 text-center">
                     <p className="text-sm text-slate-600">未识别到课程</p>
-                    {droppedCount > 0 && (
+                    {invalidCount > 0 && (
                       <p className="mt-1 text-xs text-amber-600">
-                        有 {droppedCount} 条未识别的条目已忽略
+                        有 {invalidCount} 条识别结果已自动修正
                       </p>
                     )}
                     <button
@@ -268,21 +346,81 @@ export default function ImportTimetable({
                   </div>
                 ) : (
                   <>
+                    {spanSuspect && (
+                      <p className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                        未能识别课程跨越的节数，所有课程都按 1 节导入，请逐行核对「结束节」
+                      </p>
+                    )}
+                    {invalidCount > 0 && (
+                      <p className="mb-2 text-xs text-amber-600">
+                        有 {invalidCount} 条识别结果已自动修正
+                      </p>
+                    )}
+                    <div className="mb-2 rounded-md border border-line bg-slate-50 p-3">
+                      <div className="mb-2 text-xs font-medium text-slate-600">
+                        节次时间（可修改）
+                      </div>
+                      <div className="grid grid-cols-3 gap-x-3 gap-y-2 sm:grid-cols-4">
+                        {periods.map((p, i) => (
+                          <div key={i} className="flex items-center gap-1">
+                            <span className="w-10 shrink-0 text-[11px] text-slate-500">
+                              第{i + 1}节
+                            </span>
+                            <input
+                              value={p.start}
+                              onChange={(e) => updatePeriod(i, "start", e.target.value)}
+                              placeholder="08:00"
+                              className="w-14 rounded-md border border-line bg-white px-1 py-0.5 text-xs text-slate-700 outline-none focus:border-primary"
+                            />
+                            <span className="text-slate-400">-</span>
+                            <input
+                              value={p.end}
+                              onChange={(e) => updatePeriod(i, "end", e.target.value)}
+                              placeholder="08:40"
+                              className="w-14 rounded-md border border-line bg-white px-1 py-0.5 text-xs text-slate-700 outline-none focus:border-primary"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                     <div className="max-h-[50vh] overflow-auto">
                       <table className="w-full border-collapse text-sm">
                         <thead>
                           <tr className="text-left text-xs text-slate-500">
                             <th className="px-2 py-2 font-medium">课程名</th>
-                            <th className="px-2 py-2 font-medium">星期</th>
+                            <th className="px-2 py-2 font-medium">
+                              星期
+                              {hasSuspect && (
+                                <span className="ml-1 text-[10px] font-normal text-amber-600">
+                                  黄色行请核对
+                                </span>
+                              )}
+                            </th>
                             <th className="px-2 py-2 font-medium">起始节</th>
-                            <th className="px-2 py-2 font-medium">结束节</th>
+                            <th
+                              className={`px-2 py-2 font-medium ${
+                                spanSuspect ? "bg-amber-100 text-amber-700" : ""
+                              }`}
+                            >
+                              结束节
+                              {hasSuspect && (
+                                <span className="ml-1 text-[10px] font-normal text-amber-600">
+                                  黄色行请核对
+                                </span>
+                              )}
+                            </th>
+                            <th className="px-2 py-2 font-medium">节次时间</th>
                             <th className="px-2 py-2 font-medium">地点</th>
+                            <th className="px-2 py-2 font-medium">提前提醒</th>
                             <th className="px-2 py-2 font-medium" />
                           </tr>
                         </thead>
                         <tbody>
                           {rows.map((r, i) => (
-                            <tr key={i} className="border-t border-line">
+                            <tr
+                              key={i}
+                              className={`border-t border-line ${r.suspect ? "bg-amber-50" : ""}`}
+                            >
                               <td className="px-2 py-2">
                                 <input
                                   value={r.name}
@@ -327,12 +465,30 @@ export default function ImportTimetable({
                                   className={cellInput}
                                 />
                               </td>
+                              <td className="whitespace-nowrap px-2 py-2 text-xs text-slate-600">
+                                {periodLabel(r.startSlot, periods)} - {periodLabel(r.endSlot, periods)}
+                              </td>
                               <td className="px-2 py-2">
                                 <input
                                   value={r.location}
                                   onChange={(e) => updateRow(i, { location: e.target.value })}
                                   className={cellInput}
                                 />
+                              </td>
+                              <td className="w-32 px-2 py-2">
+                                <select
+                                  value={r.remindBeforeMin}
+                                  onChange={(e) =>
+                                    updateRow(i, { remindBeforeMin: Number(e.target.value) })
+                                  }
+                                  className={cellInput}
+                                >
+                                  {REMIND_OPTIONS.map((o) => (
+                                    <option key={o.value} value={o.value}>
+                                      {o.label}
+                                    </option>
+                                  ))}
+                                </select>
                               </td>
                               <td className="px-2 py-2 text-right">
                                 <button
@@ -349,20 +505,30 @@ export default function ImportTimetable({
                       </table>
                     </div>
 
-                    {droppedCount > 0 && (
-                      <p className="mt-3 text-xs text-amber-600">
-                        有 {droppedCount} 条未识别的条目已忽略
-                      </p>
-                    )}
-
                     <div className="mt-4 flex items-center justify-between gap-3">
-                      <button
-                        type="button"
-                        onClick={close}
-                        className="h-9 cursor-pointer rounded-md border border-line bg-white px-4 text-sm text-slate-700 transition-colors hover:bg-slate-50"
-                      >
-                        取消
-                      </button>
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={close}
+                          className="h-9 cursor-pointer rounded-md border border-line bg-white px-4 text-sm text-slate-700 transition-colors hover:bg-slate-50"
+                        >
+                          取消
+                        </button>
+                        <label className="flex items-center gap-2 text-xs text-slate-500">
+                          生成周数
+                          <select
+                            value={weeks}
+                            onChange={(e) => setWeeks(Number(e.target.value))}
+                            className="h-9 cursor-pointer rounded-md border border-line bg-white px-2 text-sm text-slate-700 outline-none transition-colors focus:border-primary"
+                          >
+                            {WEEKS_OPTIONS.map((o) => (
+                              <option key={o.value} value={o.value}>
+                                {o.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
