@@ -1,0 +1,153 @@
+{
+  "case": "ratio1",
+  "image": "19ccfabe803289b63cf5b45e8e8ab61a.jpg",
+  "httpStatus": 200,
+  "elapsedMs": 24091,
+  "capturedAt": "2026-11-12T08:39:39.810Z",
+  "baseUrl": "http://localhost:3000",
+  "response": {
+    "ok": true,
+    "data": {
+      "slotsPerDay": 11,
+      "periods": [
+        {
+          "slot": 1,
+          "start": "08:30",
+          "end": "09:10"
+        },
+        {
+          "slot": 2,
+          "start": "09:10",
+          "end": "09:50"
+        },
+        {
+          "slot": 3,
+          "start": "10:20",
+          "end": "11:00"
+        },
+        {
+          "slot": 4,
+          "start": "11:10",
+          "end": "11:50"
+        },
+        {
+          "slot": 5,
+          "start": "14:10",
+          "end": "14:50"
+        },
+        {
+          "slot": 6,
+          "start": "15:00",
+          "end": "15:40"
+        },
+        {
+          "slot": 7,
+          "start": "16:00",
+          "end": "16:40"
+        },
+        {
+          "slot": 8,
+          "start": "16:50",
+          "end": "17:30"
+        }
+      ],
+      "courses": [
+        {
+          "name": "体育",
+          "day": 2,
+          "startSlot": 3,
+          "endSlot": 3,
+          "weeks": "",
+          "location": "",
+          "teacher": ""
+        },
+        {
+          "name": "大学生创新创业教育",
+          "day": 2,
+          "startSlot": 6,
+          "endSlot": 6,
+          "weeks": "",
+          "location": "北苑 15-101",
+          "teacher": ""
+        },
+        {
+          "name": "美育教育",
+          "day": 2,
+          "startSlot": 8,
+          "endSlot": 8,
+          "weeks": "",
+          "location": "北苑 7-104",
+          "teacher": ""
+        },
+        {
+          "name": "职业生涯规划与就业指导",
+          "day": 3,
+          "startSlot": 3,
+          "endSlot": 3,
+          "weeks": "",
+          "location": "北苑 11-202",
+          "teacher": ""
+        },
+        {
+          "name": "思想道德与法治",
+          "day": 3,
+          "startSlot": 4,
+          "endSlot": 4,
+          "weeks": "",
+          "location": "综 507",
+          "teacher": ""
+        },
+        {
+          "name": "网页设计",
+          "day": 3,
+          "startSlot": 6,
+          "endSlot": 6,
+          "weeks": "",
+          "location": "实训楼 408",
+          "teacher": ""
+        },
+        {
+          "name": "人工智能导论",
+          "day": 4,
+          "startSlot": 3,
+          "endSlot": 3,
+          "weeks": "",
+          "location": "实训楼 303",
+          "teacher": ""
+        },
+        {
+          "name": "职业英语",
+          "day": 4,
+          "startSlot": 4,
+          "endSlot": 4,
+          "weeks": "",
+          "location": "综 305",
+          "teacher": ""
+        },
+        {
+          "name": "网络操作系统",
+          "day": 4,
+          "startSlot": 6,
+          "endSlot": 6,
+          "weeks": "",
+          "location": "实训楼 501",
+          "teacher": ""
+        },
+        {
+          "name": "程序设计基础",
+          "day": 5,
+          "startSlot": 3,
+          "endSlot": 4,
+          "weeks": "",
+          "location": "实训楼 201",
+          "teacher": ""
+        }
+      ],
+      "invalidCount": 0,
+      "colCount": 7,
+      "spanSuspect": false
+    },
+    "model": "glm-4v-flash",
+    "durationMs": 24038
+  }
+}

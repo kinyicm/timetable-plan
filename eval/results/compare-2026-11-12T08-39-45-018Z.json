@@ -1,0 +1,303 @@
+{
+  "generatedAt": "2026-11-12T08:39:45.018Z",
+  "groundTruth": "eval/timetable-groundtruth.json",
+  "results": [
+    {
+      "case": "ratio1",
+      "metrics": {
+        "total": 10,
+        "returned": 10,
+        "matched": 10,
+        "dayAccuracy": 5,
+        "slotAccuracy": 0,
+        "locationAccuracy": 10,
+        "missing": [],
+        "extra": [],
+        "avgTimeErrorMinutes": 53,
+        "periodsFrom": "识别结果",
+        "rows": [
+          {
+            "name": "体育",
+            "day": {
+              "got": 2,
+              "want": 2,
+              "ok": true
+            },
+            "slots": {
+              "got": "3-3",
+              "want": "1-2",
+              "ok": false
+            },
+            "location": {
+              "got": "",
+              "want": "",
+              "ok": true
+            },
+            "time": {
+              "got": [
+                620,
+                660
+              ],
+              "want": [
+                510,
+                590
+              ]
+            }
+          },
+          {
+            "name": "大学生创新创业教育",
+            "day": {
+              "got": 2,
+              "want": 1,
+              "ok": false
+            },
+            "slots": {
+              "got": "6-6",
+              "want": "5-6",
+              "ok": false
+            },
+            "location": {
+              "got": "北苑 15-101",
+              "want": "北苑15-101",
+              "ok": true
+            },
+            "time": {
+              "got": [
+                900,
+                940
+              ],
+              "want": [
+                850,
+                940
+              ]
+            }
+          },
+          {
+            "name": "美育教育",
+            "day": {
+              "got": 2,
+              "want": 1,
+              "ok": false
+            },
+            "slots": {
+              "got": "8-8",
+              "want": "7-8",
+              "ok": false
+            },
+            "location": {
+              "got": "北苑 7-104",
+              "want": "北苑7-104",
+              "ok": true
+            },
+            "time": {
+              "got": [
+                1010,
+                1050
+              ],
+              "want": [
+                960,
+                1050
+              ]
+            }
+          },
+          {
+            "name": "职业生涯规划与就业指导",
+            "day": {
+              "got": 3,
+              "want": 3,
+              "ok": true
+            },
+            "slots": {
+              "got": "3-3",
+              "want": "1-2",
+              "ok": false
+            },
+            "location": {
+              "got": "北苑 11-202",
+              "want": "北苑11-202",
+              "ok": true
+            },
+            "time": {
+              "got": [
+                620,
+                660
+              ],
+              "want": [
+                510,
+                590
+              ]
+            }
+          },
+          {
+            "name": "思想道德与法治",
+            "day": {
+              "got": 3,
+              "want": 2,
+              "ok": false
+            },
+            "slots": {
+              "got": "4-4",
+              "want": "3-4",
+              "ok": false
+            },
+            "location": {
+              "got": "综 507",
+              "want": "综507",
+              "ok": true
+            },
+            "time": {
+              "got": [
+                670,
+                710
+              ],
+              "want": [
+                620,
+                710
+              ]
+            }
+          },
+          {
+            "name": "网页设计",
+            "day": {
+              "got": 3,
+              "want": 2,
+              "ok": false
+            },
+            "slots": {
+              "got": "6-6",
+              "want": "5-8",
+              "ok": false
+            },
+            "location": {
+              "got": "实训楼 408",
+              "want": "实训楼408",
+              "ok": true
+            },
+            "time": {
+              "got": [
+                900,
+                940
+              ],
+              "want": [
+                850,
+                1050
+              ]
+            }
+          },
+          {
+            "name": "人工智能导论",
+            "day": {
+              "got": 4,
+              "want": 4,
+              "ok": true
+            },
+            "slots": {
+              "got": "3-3",
+              "want": "1-2",
+              "ok": false
+            },
+            "location": {
+              "got": "实训楼 303",
+              "want": "实训楼303",
+              "ok": true
+            },
+            "time": {
+              "got": [
+                620,
+                660
+              ],
+              "want": [
+                510,
+                590
+              ]
+            }
+          },
+          {
+            "name": "职业英语",
+            "day": {
+              "got": 4,
+              "want": 4,
+              "ok": true
+            },
+            "slots": {
+              "got": "4-4",
+              "want": "3-4",
+              "ok": false
+            },
+            "location": {
+              "got": "综 305",
+              "want": "综305",
+              "ok": true
+            },
+            "time": {
+              "got": [
+                670,
+                710
+              ],
+              "want": [
+                620,
+                710
+              ]
+            }
+          },
+          {
+            "name": "网络操作系统",
+            "day": {
+              "got": 4,
+              "want": 3,
+              "ok": false
+            },
+            "slots": {
+              "got": "6-6",
+              "want": "5-6",
+              "ok": false
+            },
+            "location": {
+              "got": "实训楼 501",
+              "want": "实训楼501",
+              "ok": true
+            },
+            "time": {
+              "got": [
+                900,
+                940
+              ],
+              "want": [
+                850,
+                940
+              ]
+            }
+          },
+          {
+            "name": "程序设计基础",
+            "day": {
+              "got": 5,
+              "want": 5,
+              "ok": true
+            },
+            "slots": {
+              "got": "3-4",
+              "want": "1-4",
+              "ok": false
+            },
+            "location": {
+              "got": "实训楼 201",
+              "want": "实训楼201",
+              "ok": true
+            },
+            "time": {
+              "got": [
+                620,
+                710
+              ],
+              "want": [
+                510,
+                710
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
