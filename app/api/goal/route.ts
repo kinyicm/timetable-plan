@@ -5,92 +5,29 @@
  * 密钥只从服务端环境变量读取（ZHIPU_API_KEY），绝不接受客户端传入密钥。
  *
  * 职责边界：
- *   模型只负责「把目标拆成子任务」并给出日期/时段语义；
- *   时段是否落在空闲块内、越界搬迁、每日超时丢弃、总时长偏差提示等校验全部由服务端程序完成。
+ *   模型只负责「把目标拆成子任务」并给出落在哪个空闲块（freeSlotIndex + 偏移 + 时长）；
+ *   下标是否合法、时长是否在 30-120、区间是否重叠、每日超时丢弃、总时长偏差提示等
+ *   全部由服务端程序完成。
  */
 
-// Vercel 最长执行时间（秒）。
-export const maxDuration = 60;
+import { chatOnce, desensitize, LlmError } from "@/lib/llm";
+import { checkRateLimit } from "@/lib/rateLimit";
+import type { KnowledgePoint } from "@/lib/types";
+
+// Vercel 最长执行时间（秒）。与上游 fetch 超时（120s）对齐。
+export const maxDuration = 120;
 
 /** 模型名：可换模型而不改代码。 */
 const MODEL = process.env.ZHIPU_TEXT_MODEL ?? "glm-4-flash";
-/** 智谱 OpenAI 兼容 `chat/completions` 接口。 */
-const ENDPOINT = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
 
-/** 与智谱接口基准超时（秒）对齐。 */
-const FETCH_TIMEOUT_MS = 50_000;
+/** 与智谱接口基准超时（秒）对齐：目标规划可能较慢，放宽到 120 秒。 */
+const FETCH_TIMEOUT_MS = 120_000;
 
 /** 请求体上限（字节）。 */
 const MAX_BODY_BYTES = 8 * 1024;
 
-/** 是否本地开发（本地不限流，方便调试）。 */
-const IS_DEV =
-  process.env.NODE_ENV !== "production" || process.env.DISABLE_RATE_LIMIT === "1";
-
-/** 限流窗口与额度：单 IP 每分钟最多 5 次目标规划。 */
-const RATE_WINDOW_MS = 60_000;
-const RATE_MAX = 5;
-const rateBuckets = new Map<string, number[]>();
-
 /** 单天最多安排的累计时长（分钟）。 */
 const MAX_DAILY_MIN = 240;
-
-/** 兼容 IPv6 简写（::1）与 IPv4。 */
-function getClientIp(req: Request): string {
-  const real = req.headers.get("x-real-ip");
-  if (real) return real.trim();
-  const xff = req.headers.get("x-forwarded-for");
-  if (xff) {
-    const parts = xff.split(",").map((s) => s.trim()).filter(Boolean);
-    if (parts.length > 0) return parts[parts.length - 1];
-  }
-  return "unknown";
-}
-
-/** 滑动窗口限流：返回 null 表示放行，返回字符串表示拒绝原因。 */
-function checkRateLimit(req: Request): string | null {
-  if (IS_DEV) return null;
-  const ip = getClientIp(req);
-  const now = Date.now();
-  const bucket = (rateBuckets.get(ip) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
-  if (bucket.length >= RATE_MAX) {
-    rateBuckets.set(ip, bucket);
-    return `请求过于频繁（每分钟最多 ${RATE_MAX} 次），请稍后再试`;
-  }
-  bucket.push(now);
-  rateBuckets.set(ip, bucket);
-  if (rateBuckets.size > 5000) {
-    for (const [k, v] of rateBuckets) {
-      if (v.every((t) => now - t >= RATE_WINDOW_MS)) rateBuckets.delete(k);
-    }
-  }
-  return null;
-}
-
-/** 把可能出现在错误文本里的密钥替换成 ***，避免上游报错把密钥透回浏览器。 */
-function desensitize(text: string, key: string): string {
-  if (!key) return text;
-  return text.split(key).join("***");
-}
-
-// 规划错误：带 HTTP 状态码，便于外层区分 401/429 等。
-class PlanError extends Error {
-  status: number;
-  constructor(message: string, status = 500) {
-    super(message);
-    this.status = status;
-  }
-}
-
-/** 从模型回复里截取第一个 "{" 到最后一个 "}" 之间的内容再 parse。 */
-function parseLoose(raw: string): unknown {
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) {
-    throw new PlanError("JSON 解析失败：模型未返回可用的 JSON");
-  }
-  return JSON.parse(raw.slice(start, end + 1));
-}
 
 /** 把数字或数字字符串转成整数；null / undefined / 非数字返回 NaN。 */
 function asInt(v: unknown): number {
@@ -126,16 +63,6 @@ type GoalAction = {
   detail: string;
 };
 
-function dateToUtcMs(dateKey: string): number {
-  const [y, m, d] = dateKey.split("-").map(Number);
-  return Date.UTC(y, m - 1, d);
-}
-
-/** 两个日期相差的天数（绝对值）。 */
-function daysBetween(a: string, b: string): number {
-  return Math.round(Math.abs(dateToUtcMs(a) - dateToUtcMs(b)) / 86400000);
-}
-
 /** 分钟数 → "HH:MM"（仅用于提示词里展示空闲时段）。 */
 function padHHMM(min: number): string {
   const h = Math.floor(min / 60);
@@ -143,89 +70,111 @@ function padHHMM(min: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
-/**
- * 找到「时间上最接近」且长度足够的空闲块：
- * 距离 = 日期相差天数 * 1440 + 开始分钟差值；取距离最小者。
- * 找不到（长度都不够）返回 null。
- */
-function findClosestSlot(
-  startMin: number,
-  date: string,
-  duration: number,
-  freeSlots: FreeSlotInput[],
-): FreeSlotInput | null {
-  let best: FreeSlotInput | null = null;
-  let bestDist = Infinity;
-  for (const slot of freeSlots) {
-    if (slot.endMin - slot.startMin < duration) continue;
-    const dist = daysBetween(date, slot.date) * 1440 + Math.abs(slot.startMin - startMin);
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = slot;
-    }
-  }
-  return best;
+/** 任务标题是否命中某个知识点名称（允许「洛必达法则 · 练习」这类后缀）。 */
+function titleMatchesPoint(title: string, points: KnowledgePoint[]): boolean {
+  return points.some((p) => {
+    if (!p.name) return false;
+    if (title === p.name) return true;
+    if (!title.startsWith(p.name)) return false;
+    const rest = title.slice(p.name.length).trim();
+    return rest === "" || rest.startsWith("·") || rest.startsWith("（") || rest.startsWith("(");
+  });
 }
 
 /**
- * 程序侧完成时段校验：
- * 1. 逐个 action：完全落在某个 freeSlot 内 → 保留；否则找最近空档挪过去（movedCount++）；
- *    找不到 → 丢弃（droppedCount++）。
- * 2. 同一天累计时长 > 240 分钟 → 丢弃该天最晚的子任务（droppedCount++），直到不再超。
+ * 程序侧完成时段换算与校验：
+ * 1. 逐条把 freeSlotIndex + offsetMin + durationMin 换算成 date/startMin/endMin。
+ * 2. 校验：下标合法、时长 30-120、偏移非负、区间不超出空档、不与已占用区间重叠、
+ *    标题命中知识点清单。通过则记入「已占用区间」表；不通过丢弃（droppedCount++）。
+ * 3. 模型返回超过 12 条 → 按时间顺序截断，多余的计入 droppedCount。
+ * 4. 同一天累计时长 > 240 分钟 → 丢弃该天最晚的子任务（droppedCount++），直到不再超。
+ * 注：不再做「吸附到最近空档」，movedCount 恒为 0（保留字段）。
  */
 function validateActions(
   rawActions: unknown,
   freeSlots: FreeSlotInput[],
+  points: KnowledgePoint[],
 ): { actions: GoalAction[]; movedCount: number; droppedCount: number } {
-  const list = Array.isArray(rawActions) ? rawActions : [];
-  const kept: GoalAction[] = [];
-  let movedCount = 0;
+  const rawList = Array.isArray(rawActions) ? rawActions : [];
   let droppedCount = 0;
+
+  // 超过 12 条：按时间顺序（空档下标 + 偏移）排序后截断，多余的计入 droppedCount。
+  let list: unknown[] = rawList;
+  if (rawList.length > 12) {
+    const indexed = rawList.map((raw) => {
+      const a = (raw ?? {}) as Record<string, unknown>;
+      const idx = asInt(a.freeSlotIndex);
+      const off = asInt(a.offsetMin);
+      return {
+        raw,
+        idx: Number.isFinite(idx) ? idx : Number.MAX_SAFE_INTEGER,
+        off: Number.isFinite(off) ? off : 0,
+      };
+    });
+    indexed.sort((x, y) => x.idx - y.idx || x.off - y.off);
+    droppedCount += indexed.length - 12;
+    list = indexed.slice(0, 12).map((x) => x.raw);
+  }
+
+  const kept: GoalAction[] = [];
+  // 已占用区间表：按 date 分组，保证同一空档内任务不重叠。
+  const occupied = new Map<string, [number, number][]>();
 
   for (const raw of list) {
     const a = (raw ?? {}) as Record<string, unknown>;
-    if (a.op !== "add") {
-      droppedCount++;
-      continue;
-    }
+    const idx = asInt(a.freeSlotIndex);
+    const offsetMin = asInt(a.offsetMin);
+    const durationMin = asInt(a.durationMin);
     const title = typeof a.title === "string" ? a.title.trim() : "";
     const detail = typeof a.detail === "string" ? a.detail.trim() : "";
-    const date = typeof a.date === "string" ? a.date : "";
-    const startMin = asInt(a.startMin);
-    const endMin = asInt(a.endMin);
 
-    if (!title || !date) {
+    if (!title) {
       droppedCount++;
       continue;
     }
-    if (!Number.isFinite(startMin) || !Number.isFinite(endMin) || endMin <= startMin) {
+    // 提供了知识点清单时，任务标题必须命中某个知识点名称，否则丢弃。
+    if (points.length > 0 && !titleMatchesPoint(title, points)) {
+      droppedCount++;
+      continue;
+    }
+    if (!Number.isFinite(idx) || idx < 0 || idx >= freeSlots.length) {
+      droppedCount++;
+      continue;
+    }
+    if (!Number.isFinite(durationMin) || durationMin < 30 || durationMin > 120) {
+      droppedCount++;
+      continue;
+    }
+    if (!Number.isFinite(offsetMin) || offsetMin < 0) {
       droppedCount++;
       continue;
     }
 
-    const duration = endMin - startMin;
-    const fits = freeSlots.some(
-      (s) => s.date === date && s.startMin <= startMin && endMin <= s.endMin,
-    );
+    const slot = freeSlots[idx];
+    const startMin = slot.startMin + offsetMin;
+    const endMin = startMin + durationMin;
 
-    let finalDate = date;
-    let finalStart = startMin;
-    if (!fits) {
-      const slot = findClosestSlot(startMin, date, duration, freeSlots);
-      if (!slot) {
-        droppedCount++;
-        continue;
-      }
-      finalDate = slot.date;
-      finalStart = slot.startMin;
-      movedCount++;
+    // 区间不得超出该空档边界
+    if (endMin > slot.endMin) {
+      droppedCount++;
+      continue;
     }
+    // 区间不得与已占用区间相交
+    const dayOccupied = occupied.get(slot.date) ?? [];
+    const overlaps = dayOccupied.some(([s, e]) => startMin < e && endMin > s);
+    if (overlaps) {
+      droppedCount++;
+      continue;
+    }
+
+    dayOccupied.push([startMin, endMin]);
+    occupied.set(slot.date, dayOccupied);
 
     kept.push({
       op: "add",
-      date: finalDate,
-      startMin: finalStart,
-      endMin: finalStart + duration,
+      date: slot.date,
+      startMin,
+      endMin,
       title,
       kind: "task",
       detail,
@@ -257,7 +206,7 @@ function validateActions(
     x.date === y.date ? x.startMin - y.startMin : x.date < y.date ? -1 : 1,
   );
 
-  return { actions: final, movedCount, droppedCount };
+  return { actions: final, movedCount: 0, droppedCount };
 }
 
 /** 拼出「把目标拆成子任务并排进空闲时段」的提示词。 */
@@ -269,12 +218,30 @@ function buildPrompt(ctx: {
   freeSlots: FreeSlotInput[];
   existingTitles: string[];
   today: string;
+  points: KnowledgePoint[];
+  strategy?: { name: string; type: string; summary: string; sessionsPerWeek: number; avgSessionMin: number };
 }): string {
   const slotsText = ctx.freeSlots
-    .map((s) => `${s.date} ${padHHMM(s.startMin)}-${padHHMM(s.endMin)}`)
-    .join("、");
+    .map(
+      (s, i) =>
+        `[${i}] ${s.date} ${padHHMM(s.startMin)}-${padHHMM(s.endMin)} 共 ${s.endMin - s.startMin} 分钟`,
+    )
+    .join("\n");
   const existingText = ctx.existingTitles.length ? ctx.existingTitles.join("、") : "（暂无）";
   const weeklyText = Number.isFinite(ctx.hoursPerWeek) ? `${ctx.hoursPerWeek} 小时` : "未指定";
+  const pointsText = ctx.points.length
+    ? ctx.points
+        .map(
+          (p, i) =>
+            `${i + 1}. ${p.name}${p.category ? `（${p.category}）` : ""}，难度${p.difficulty}，约 ${
+              Number.isFinite(p.estimatedMinutes) ? p.estimatedMinutes : 60
+            } 分钟`,
+        )
+        .join("\n")
+    : "（未提供知识点清单，请自行把目标拆成子任务）";
+  const strategyText = ctx.strategy
+    ? `\n用户已选定方案：strategy=${ctx.strategy.type}（${ctx.strategy.name}），每周 ${ctx.strategy.sessionsPerWeek} 次，每次约 ${ctx.strategy.avgSessionMin} 分钟。请严格按这个节奏安排，不要改成其他节奏。`
+    : "";
 
   return `你是「课表规划」应用的学习规划助手。请把一个学习目标拆解成具体可执行的子任务，并排进给定的空闲时段。只输出一个严格的 JSON 对象，不要任何解释文字，不要用 markdown 代码块包裹。
 
@@ -283,77 +250,36 @@ function buildPrompt(ctx: {
 - 截止日期：${ctx.deadline || "未指定"}
 - 每周投入：${weeklyText}
 - 优先级：${ctx.priority || "未指定"}
-- 今天：${ctx.today || "未知"}
+- 今天：${ctx.today || "未知"}${strategyText}
 
-可用的空闲时段（只能在这些时段内安排，不得越界）：
+可用的空闲时段（编号从 0 开始，只能使用列出的编号）：
 ${slotsText || "（无）"}
 
 已有事件标题（避免重复）：${existingText}
+
+需要逐一安排的知识点清单（按学习顺序，逐条安排，不得跳过）：
+${pointsText}
 
 JSON 结构固定如下：
 {
   "feasible": boolean,
   "actions": [
-    { "op": "add", "date": "YYYY-MM-DD", "startMin": number, "endMin": number, "title": string, "kind": "task", "detail": string }
+    { "freeSlotIndex": number, "offsetMin": number, "durationMin": number, "title": string, "detail": string }
   ],
   "reason": "为什么这样排（2-4 句）",
   "advice": "若不可行或需要调整，给替代方案"
 }
 
 必须遵守的规则：
-- 把目标拆成 4-12 个具体子任务，每个子任务 30-120 分钟。
-- 每个 action 的 date、startMin、endMin 必须完全落在上面某个空闲时段内；startMin 和 endMin 都是自当天 00:00 起的分钟数。
-- kind 一律写 "task"。
+- 把目标拆成具体子任务，每个子任务 30-120 分钟；actions 最多 12 条。
+- 若提供了知识点清单：每条任务必须对应清单里的一个知识点，title 必须等于该知识点的 name（可加后缀如「· 练习」），按 order 顺序依次排入空闲时段；不得把 title 换成「复习高数」这类笼统说法。
+- freeSlotIndex 只能是上面列出的编号；offsetMin 是在该空档内的偏移（0 或 30 的倍数），且 offsetMin + durationMin 不得超过该空档的长度。
+- 总时长尽量接近「每周投入」的小时数。
+- 同一个空档内可以放多个任务，但彼此不要重叠。
 - title 写子任务名称，detail 写这一子任务具体做什么（一两句）。
 - feasible=true 表示能完整安排；feasible=false 时 actions 可以为空数组或只排一部分，并且必须在 advice 里说明为什么不可行、给出替代建议。
 - 所有数字字段输出数字类型，不要加引号。
 - 只输出上面这一个 JSON。`;
-}
-
-/** 单次调用智谱接口并返回解析后的 JSON（不做重试）。 */
-async function chatOnce(key: string, prompt: string): Promise<unknown> {
-  let resp: Response;
-  try {
-    resp = await fetch(ENDPOINT, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [{ role: "user", content: prompt }],
-      }),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-  } catch (e) {
-    if (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError")) {
-      throw new PlanError("规划超时，请稍后重试");
-    }
-    throw new PlanError("无法连接规划服务，请检查网络");
-  }
-
-  if (!resp.ok) {
-    const detail = await resp.text().catch(() => "");
-    if (resp.status === 401) {
-      throw new PlanError("密钥无效（401）：服务端 ZHIPU_API_KEY 配置不正确", 401);
-    }
-    if (resp.status === 429) {
-      throw new PlanError("请求过于频繁，模型限流（429），请稍后再试", 429);
-    }
-    throw new PlanError(
-      `规划服务返回错误（${resp.status}）：${desensitize(detail, key).slice(0, 200)}`,
-    );
-  }
-
-  const json = await resp.json().catch(() => {
-    throw new PlanError("模型接口响应不是合法 JSON");
-  });
-  const text = json?.choices?.[0]?.message?.content;
-  if (typeof text !== "string" || !text.trim()) {
-    throw new PlanError("模型未返回内容");
-  }
-  return parseLoose(text);
 }
 
 function parseFreeSlots(raw: unknown): FreeSlotInput[] {
@@ -372,6 +298,29 @@ function parseFreeSlots(raw: unknown): FreeSlotInput[] {
   return slots;
 }
 
+/** 解析用户勾选的知识点清单（按 order 升序），忽略无效项。 */
+function parsePoints(raw: unknown): KnowledgePoint[] {
+  if (!Array.isArray(raw)) return [];
+  const out: KnowledgePoint[] = [];
+  for (const item of raw) {
+    const p = (item ?? {}) as Record<string, unknown>;
+    const name = typeof p.name === "string" ? p.name.trim() : "";
+    if (!name) continue;
+    const difficultyRaw = typeof p.difficulty === "string" ? p.difficulty.trim() : "";
+    out.push({
+      id: typeof p.id === "string" ? p.id : "",
+      name,
+      category: typeof p.category === "string" ? p.category.trim() : "",
+      difficulty:
+        (difficultyRaw === "进阶" || difficultyRaw === "难点" ? difficultyRaw : "基础") as KnowledgePoint["difficulty"],
+      estimatedMinutes: asInt(p.estimatedMinutes),
+      order: asInt(p.order),
+    });
+  }
+  out.sort((a, b) => (Number.isFinite(a.order) && Number.isFinite(b.order) ? a.order - b.order : 0));
+  return out;
+}
+
 export async function POST(req: Request) {
   const key = process.env.ZHIPU_API_KEY;
   if (!key) {
@@ -382,7 +331,7 @@ export async function POST(req: Request) {
   }
 
   // 限流放在解析请求体之前：非法/超量请求不应消耗配额。
-  const limited = checkRateLimit(req);
+  const limited = checkRateLimit(req, "goal", 5, "请求");
   if (limited) {
     return Response.json({ ok: false, error: limited }, { status: 429 });
   }
@@ -419,17 +368,41 @@ export async function POST(req: Request) {
     : [];
   const today = typeof body.today === "string" ? body.today : "";
 
+  // 用户勾选的知识点清单（可空：为空则回退到「自行拆子任务」）。
+  const points = parsePoints(body.points);
+
+  // 可选：用户在方案咨询阶段选定的执行方案，用于让任务拆分贴合该节奏。
+  const strategyRaw = (body.strategy ?? undefined) as Record<string, unknown> | undefined;
+  let strategy: { name: string; type: string; summary: string; sessionsPerWeek: number; avgSessionMin: number } | undefined;
+  if (strategyRaw && typeof strategyRaw === "object") {
+    const name = typeof strategyRaw.name === "string" ? strategyRaw.name.trim() : "";
+    if (name) {
+      strategy = {
+        name,
+        type: typeof strategyRaw.type === "string" ? strategyRaw.type.trim() : "",
+        summary: typeof strategyRaw.summary === "string" ? strategyRaw.summary.trim() : "",
+        sessionsPerWeek: asInt(strategyRaw.sessionsPerWeek),
+        avgSessionMin: asInt(strategyRaw.avgSessionMin),
+      };
+    }
+  }
+
   try {
-    const data = await chatOnce(
+    const data = await chatOnce({
       key,
-      buildPrompt({ title, deadline, hoursPerWeek, priority, freeSlots, existingTitles, today }),
-    );
+      model: MODEL,
+      content: buildPrompt({ title, deadline, hoursPerWeek, priority, freeSlots, existingTitles, today, points, strategy }),
+      timeoutMs: FETCH_TIMEOUT_MS,
+      service: "规划",
+      timeoutMessage: "规划超时，请把目标拆小一点后重试",
+      timeoutStatus: 200,
+    });
     const d = (data ?? {}) as Record<string, unknown>;
     const feasible = d.feasible === true;
     let reason = typeof d.reason === "string" ? d.reason.trim() : "";
     const advice = typeof d.advice === "string" ? d.advice.trim() : "";
 
-    const { actions, movedCount, droppedCount } = validateActions(d.actions, freeSlots);
+    const { actions, movedCount, droppedCount } = validateActions(d.actions, freeSlots, points);
 
     // 总时长与 hoursPerWeek*60 偏差超过 30% → 在 reason 后追加提示。
     if (Number.isFinite(hoursPerWeek) && hoursPerWeek > 0) {
@@ -438,6 +411,15 @@ export async function POST(req: Request) {
       if (Math.abs(totalMin - target) / target > 0.3) {
         const note = `（注意：已排总时长约 ${Math.round(totalMin / 60)} 小时，与目标每周 ${hoursPerWeek} 小时偏差较大）`;
         reason = reason ? `${reason} ${note}` : note;
+      }
+    }
+
+    // 知识点数量多于可安排时段（有知识点未排入）→ 在 reason 里说明。
+    if (points.length > 0) {
+      const unscheduled = points.filter((p) => !actions.some((a) => titleMatchesPoint(a.title, [p]))).length;
+      if (unscheduled > 0) {
+        const hint = `还有 ${unscheduled} 个知识点未排入，建议延长周期或提高每周投入`;
+        reason = reason ? `${reason} ${hint}` : hint;
       }
     }
 
@@ -451,7 +433,7 @@ export async function POST(req: Request) {
       droppedCount,
     });
   } catch (e) {
-    const err = e instanceof PlanError ? e : new PlanError("目标规划失败，请稍后重试");
+    const err = e instanceof LlmError ? e : new LlmError("目标规划失败，请稍后重试");
     return Response.json(
       { ok: false, error: desensitize(err.message, key) },
       { status: err.status },

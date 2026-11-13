@@ -9,89 +9,20 @@
  *   日期算术、时间换算、字段合法性校验全部由服务端程序完成，不交给模型自行保证。
  */
 
+import { chatOnce, desensitize, LlmError } from "@/lib/llm";
+import { checkRateLimit } from "@/lib/rateLimit";
+
 // Vercel 最长执行时间（秒）。本地 dev 不强制，但保持一致。
 export const maxDuration = 60;
 
 /** 模型名：可换模型而不改代码（文本任务用对话模型即可）。 */
 const MODEL = process.env.ZHIPU_TEXT_MODEL ?? "glm-4-flash";
-/** 智谱 OpenAI 兼容 `chat/completions` 接口。 */
-const ENDPOINT = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
 
 /** 与智谱接口基准超时（秒）对齐，略小于 maxDuration 留余量。 */
 const FETCH_TIMEOUT_MS = 50_000;
 
 /** 用户输入的自然语言长度上限（字数）。 */
 const MAX_TEXT_LENGTH = 500;
-
-/** 是否本地开发（本地不限流，方便调试）。 */
-const IS_DEV =
-  process.env.NODE_ENV !== "production" || process.env.DISABLE_RATE_LIMIT === "1";
-
-/** 限流窗口与额度：单 IP 每分钟最多 10 次安排。 */
-const RATE_WINDOW_MS = 60_000;
-const RATE_MAX = 10;
-const rateBuckets = new Map<string, number[]>();
-
-/**
- * 兼容 IPv6 简写（::1）与 IPv4。
- * 优先取 x-real-ip，其次取 XFF 的最后一段（离服务器最近的一跳），
- * 都取不到时退化为 "unknown"（所有未知来源共享一个桶，宁可误伤不可放开）。
- */
-function getClientIp(req: Request): string {
-  const real = req.headers.get("x-real-ip");
-  if (real) return real.trim();
-  const xff = req.headers.get("x-forwarded-for");
-  if (xff) {
-    const parts = xff.split(",").map((s) => s.trim()).filter(Boolean);
-    if (parts.length > 0) return parts[parts.length - 1];
-  }
-  return "unknown";
-}
-
-/** 滑动窗口限流：返回 null 表示放行，返回字符串表示拒绝原因。 */
-function checkRateLimit(req: Request): string | null {
-  if (IS_DEV) return null;
-  const ip = getClientIp(req);
-  const now = Date.now();
-  const bucket = (rateBuckets.get(ip) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
-  if (bucket.length >= RATE_MAX) {
-    rateBuckets.set(ip, bucket);
-    return `安排过于频繁（每分钟最多 ${RATE_MAX} 次），请稍后再试`;
-  }
-  bucket.push(now);
-  rateBuckets.set(ip, bucket);
-  if (rateBuckets.size > 5000) {
-    for (const [k, v] of rateBuckets) {
-      if (v.every((t) => now - t >= RATE_WINDOW_MS)) rateBuckets.delete(k);
-    }
-  }
-  return null;
-}
-
-/** 把可能出现在错误文本里的密钥替换成 ***，避免上游报错把密钥透回浏览器。 */
-function desensitize(text: string, key: string): string {
-  if (!key) return text;
-  return text.split(key).join("***");
-}
-
-// 安排错误：带 HTTP 状态码，便于外层区分 401/429 等。
-class PlanError extends Error {
-  status: number;
-  constructor(message: string, status = 500) {
-    super(message);
-    this.status = status;
-  }
-}
-
-/** 从模型回复里截取第一个 "{" 到最后一个 "}" 之间的内容再 parse。 */
-function parseLoose(raw: string): unknown {
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) {
-    throw new PlanError("JSON 解析失败：模型未返回可用的 JSON");
-  }
-  return JSON.parse(raw.slice(start, end + 1));
-}
 
 /** 把「YYYY-MM-DD」加上若干天（用 UTC 计算，避免时区/夏令时干扰）。 */
 function addDaysToDateKey(dateKey: string, days: number): string {
@@ -302,52 +233,6 @@ JSON 结构固定如下：
 - 只输出上面这一个 JSON。`;
 }
 
-/** 单次调用智谱接口并返回解析后的 JSON（不做重试）。 */
-async function chatOnce(key: string, prompt: string): Promise<unknown> {
-  let resp: Response;
-  try {
-    resp = await fetch(ENDPOINT, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [{ role: "user", content: prompt }],
-      }),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-  } catch (e) {
-    if (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError")) {
-      throw new PlanError("安排超时，请稍后重试");
-    }
-    throw new PlanError("无法连接安排服务，请检查网络");
-  }
-
-  if (!resp.ok) {
-    const detail = await resp.text().catch(() => "");
-    if (resp.status === 401) {
-      throw new PlanError("密钥无效（401）：服务端 ZHIPU_API_KEY 配置不正确", 401);
-    }
-    if (resp.status === 429) {
-      throw new PlanError("请求过于频繁，模型限流（429），请稍后再试", 429);
-    }
-    throw new PlanError(
-      `安排服务返回错误（${resp.status}）：${desensitize(detail, key).slice(0, 200)}`,
-    );
-  }
-
-  const json = await resp.json().catch(() => {
-    throw new PlanError("模型接口响应不是合法 JSON");
-  });
-  const text = json?.choices?.[0]?.message?.content;
-  if (typeof text !== "string" || !text.trim()) {
-    throw new PlanError("模型未返回内容");
-  }
-  return parseLoose(text);
-}
-
 export async function POST(req: Request) {
   const key = process.env.ZHIPU_API_KEY;
   if (!key) {
@@ -358,7 +243,7 @@ export async function POST(req: Request) {
   }
 
   // 限流放在解析请求体之前：非法/超量请求不应该占用配额计数，也不该消耗带宽
-  const limited = checkRateLimit(req);
+  const limited = checkRateLimit(req, "plan", 10, "安排");
   if (limited) {
     return Response.json({ ok: false, error: limited }, { status: 429 });
   }
@@ -388,7 +273,14 @@ export async function POST(req: Request) {
   const existing = typeof ctx.existing === "string" ? ctx.existing : "";
 
   try {
-    const data = await chatOnce(key, buildPrompt(text, { today, weekStart, weekEnd, existing }));
+    const data = await chatOnce({
+      key,
+      model: MODEL,
+      content: buildPrompt(text, { today, weekStart, weekEnd, existing }),
+      timeoutMs: FETCH_TIMEOUT_MS,
+      service: "安排",
+      timeoutMessage: "安排超时，请稍后重试",
+    });
     const d = (data ?? {}) as Record<string, unknown>;
     const reply = typeof d.reply === "string" ? d.reply.trim() : "";
     const { actions, droppedCount, replyAddition } = convertActions(d.actions, today, weekStart);
@@ -399,7 +291,7 @@ export async function POST(req: Request) {
       : reply;
     return Response.json({ ok: true, actions, reply: finalReply, droppedCount });
   } catch (e) {
-    const err = e instanceof PlanError ? e : new PlanError("安排失败，请稍后重试");
+    const err = e instanceof LlmError ? e : new LlmError("安排失败，请稍后重试");
     // 出口统一脱敏：任何返回给浏览器的错误文本都不允许出现密钥原文
     return Response.json(
       { ok: false, error: desensitize(err.message, key) },
